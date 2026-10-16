@@ -1,6 +1,4 @@
-/* 粗筛搜索参数的可移植格式与严格校验. */
-export const SEARCH_PARAMETERS_VERSION = 1;
-export const SEARCH_PARAMETERS_FORMAT = 'terraria-seed-searcher/search-parameters';
+/* 粗筛设置默认值与校验, 不包含最终观测数据. */
 export const DEFAULT_SEARCH_PARAMETERS = Object.freeze({ tol: .5, offer: .55, range: Object.freeze([0, 2147483647]), spawn_lo: 3180, spawn_hi: 3220, cols: 3400, scales: '1.00', batch: 400000, device: 0 });
 const fields = Object.keys(DEFAULT_SEARCH_PARAMETERS);
 export function normalizeSearchParameters(raw) {
@@ -17,14 +15,4 @@ export function normalizeSearchParameters(raw) {
   const scales = result.scales.split(',').map(s => s.trim());
   if (!scales.length || scales.length > 8 || scales.some(s => !/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(s) || Number(s) < .1 || Number(s) > 10)) throw new Error('搜索尺度应为 1-8 个 0.1-10 范围内的数值, 用英文逗号分隔.');
   result.scales = scales.join(','); return result;
-}
-export function encodeSearchParameters(parameters) {
-  return JSON.stringify({ format: SEARCH_PARAMETERS_FORMAT, version: SEARCH_PARAMETERS_VERSION, parameters: normalizeSearchParameters(parameters) }, null, 2) + '\n';
-}
-export function decodeSearchParameters(text) {
-  if (typeof text !== 'string' || text.length > 65536) throw new Error('参数文件不能超过 64 KiB.');
-  let file;
-  try { file = JSON.parse(text.replace(/^\uFEFF/, '')); } catch { throw new Error('参数文件不是有效的 JSON.'); }
-  if (!file || file.format !== SEARCH_PARAMETERS_FORMAT || file.version !== SEARCH_PARAMETERS_VERSION) throw new Error('不是受支持的搜索参数文件或文件版本不受支持.');
-  return normalizeSearchParameters(file.parameters);
 }

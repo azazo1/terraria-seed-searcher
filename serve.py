@@ -21,6 +21,8 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
+import observation_archive
 import sys
 import threading
 import time
@@ -37,7 +39,7 @@ SEARCHER = ROOT / ("sweep2.exe" if os.name == "nt" else "sweep2")
 DEFAULT_SEED_RANGE = (0, 2147483647)
 
 STATE_LOCK = threading.Lock()
-FILE_LOCK = threading.Lock()
+FILE_LOCK = threading.RLock()
 SWEEP = {"proc": None, "started": 0.0, "log": None}
 
 
@@ -69,6 +71,47 @@ def candidates_path():
 
 def load_marks():
     return read_json(DATA / "marks.json", {"tile": 20.86, "x0": 0, "y0": 0, "cols": [], "trees": []})
+
+
+def observation_marker():
+    meta = read_json(DATA / "observed_meta.json", {})
+    return int(meta["marker"] if "marker" in meta else load_marks().get("marker", 141))
+
+
+def export_observation():
+    with FILE_LOCK:
+        return observation_archive.from_text((DATA / "observed.txt").read_text(encoding="utf-8"), observation_marker())
+
+
+def import_observation(raw):
+    observation = observation_archive.validate_observation(raw)
+    meta = {**observation_archive.summary(observation), "path": str(DATA / "observed.txt"), "source": "import"}
+    scratch = ROOT / ".tmp"
+    scratch.mkdir(exist_ok=True)
+    # 只替换搜索输入, 不触碰截图, 标定或画布标记. 失败时恢复旧搜索输入.
+    with FILE_LOCK, tempfile.TemporaryDirectory(prefix="observation-import-", dir=scratch) as temporary:
+        stage = Path(temporary)
+        names = ("observed.txt", "observed_meta.json", "shapes.json")
+        previous = {name: (DATA / name).read_bytes() if (DATA / name).exists() else None for name in names}
+        backup = stage / "previous"
+        backup.mkdir()
+        for name, content in previous.items():
+            if content is not None:
+                (backup / name).write_bytes(content)
+        (stage / "observed.txt").write_text(observation_archive.to_text(observation), encoding="utf-8")
+        write_json(stage / "observed_meta.json", meta)
+        try:
+            for name in names[:2]:
+                (stage / name).replace(DATA / name)
+            (DATA / "shapes.json").unlink(missing_ok=True)
+        except OSError:
+            for name, content in previous.items():
+                if content is None:
+                    (DATA / name).unlink(missing_ok=True)
+                else:
+                    (backup / name).replace(DATA / name)
+            raise
+    return meta
 
 
 def build_observed(mark):
@@ -106,6 +149,7 @@ def build_observed(mark):
                   if a != "-999" and b != "-999" and abs(float(a) - float(b)) >= 1.0)
     return {
         "path": str(out),
+        "source": "manual",
         "columns": n,
         "valid": valid,
         "marker": int(mark.get("marker", 141)),
@@ -114,9 +158,8 @@ def build_observed(mark):
 
 
 def sweep_command(params):
-    """按已保存的校准生成搜索命令. marker 与出生点范围都从标注里推出来."""
-    mark = load_marks()
-    marker = int(mark.get("marker", 141))
+    """使用最终观测中的出生点列号生成搜索命令."""
+    marker = observation_marker()
     spawn_lo = int(params.get("spawn_lo", 3180))
     spawn_hi = int(params.get("spawn_hi", 3220))
     lo, hi = params.get("range", list(DEFAULT_SEED_RANGE))
@@ -205,17 +248,27 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(403, {"error": "path outside frames/"})
             ctype = {".png": "image/png", ".webp": "image/webp", ".gif": "image/gif", ".bmp": "image/bmp"}.get(frame.suffix.lower(), "image/jpeg")
             return self._file(frame, ctype)
+        if p == "/api/observation":
+            try:
+                return self._send(200, export_observation())
+            except FileNotFoundError:
+                return self._send(404, {"error": "尚无最终观测数据, 请先完成标注或导入观测."})
+            except (ValueError, OSError) as error:
+                return self._send(400, {"error": str(error)})
         if p == "/api/state":
-            mark = load_marks()
+            with FILE_LOCK:
+                mark = load_marks()
+                param = read_json(DATA / "param.json", None)
+                observed = read_json(DATA / "observed_meta.json", None)
             with STATE_LOCK:
                 running = SWEEP["proc"] is not None and SWEEP["proc"].poll() is None
                 elapsed = time.time() - SWEEP["started"] if SWEEP["started"] else 0
             cands = candidates_path()
             return self._send(200, {
                 "frames": [f.name for f in sorted(FRAMES.glob("*")) if f.is_file()],
-                "param": read_json(DATA / "param.json", None),
+                "param": param,
                 "marks": {"columns": len(mark.get("cols", [])), "trees": len(mark.get("trees", []))},
-                "observed": read_json(DATA / "observed_meta.json", None),
+                "observed": observed,
                 "searcher_built": SEARCHER.is_file(),
                 "sweep": {"running": running, "elapsed": round(elapsed, 1),
                           "candidates": cands.stat().st_size if cands.is_file() else 0},
@@ -262,17 +315,32 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(404, {"ok": False, "error": "没有这个文件: " + safe})
             f.unlink()
             return self._send(200, {"ok": True, "deleted": safe})
+        if u.path == "/api/observation" and int(self.headers.get("Content-Length") or 0) > observation_archive.MAX_BYTES:
+            self.close_connection = True
+            return self._send(413, {"ok": False, "error": "观测文件不能超过 8 MiB."})
         body = self._json_body()
+        if u.path == "/api/observation":
+            with STATE_LOCK:
+                if SWEEP["proc"] is not None and SWEEP["proc"].poll() is None:
+                    return self._send(409, {"ok": False, "error": "请先停止搜索, 再导入观测数据."})
+                try:
+                    meta = import_observation(body)
+                except ValueError as error:
+                    return self._send(400, {"ok": False, "error": str(error)})
+                except OSError as error:
+                    return self._send(500, {"ok": False, "error": "导入失败: " + str(error)})
+            return self._send(200, {"ok": True, "observed": meta})
         if u.path == "/api/frames":
             write_json(DATA / "param.json", body)
             return self._send(200, {"ok": True, "saved": str(DATA / "param.json")})
         if u.path == "/api/marks":
-            write_json(DATA / "marks.json", body)
-            meta, err = build_observed(body)
-            if err:
-                return self._send(400, {"ok": False, "error": err})
-            if meta is not None:
-                write_json(DATA / "observed_meta.json", meta)
+            with FILE_LOCK:
+                write_json(DATA / "marks.json", body)
+                meta, err = build_observed(body)
+                if err:
+                    return self._send(400, {"ok": False, "error": err})
+                if meta is not None:
+                    write_json(DATA / "observed_meta.json", meta)
             return self._send(200, {"ok": True, "observed": meta})
         if u.path == "/api/sweep":
             with STATE_LOCK:

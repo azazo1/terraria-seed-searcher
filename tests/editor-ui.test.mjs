@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { migrateParam } from '../web/frame-schema.js';
-import { DEFAULT_SEARCH_PARAMETERS, decodeSearchParameters, encodeSearchParameters } from '../web/search-parameters.js';
+import { DEFAULT_SEARCH_PARAMETERS } from '../web/search-parameters.js';
 
 function environment(html, store) {
   const elements = [], ids = new Map(), events = new Map(), raf = [], draw = [];
@@ -57,10 +57,13 @@ function environment(html, store) {
       if (store.fail) return { ok: false, status: 503, json: async () => ({ error: 'offline' }) };
       if (url === '/api/frames') store.param = structuredClone(data);
       if (url === '/api/marks') store.marks = structuredClone(data);
+      if (url === '/api/observation') {
+        store.observation = structuredClone(data); store.observed = { columns: data.heights.length, valid: data.heights.filter(y => y !== -999).length, marker: data.marker, source: 'import', step_rate: 10 };
+      }
       return { ok: true, json: async () => ({ ok: true, observed: data.cols?.length ? { valid: data.cols.length, step_rate: 10 } : null }) };
     }
     if (store.readFailure?.url === url) return { ok: false, status: store.readFailure.status, json: async () => ({ error: store.readFailure.error }) };
-    const data = url === '/api/state' ? { frames: store.names, param: store.param, marks: { columns: store.marks?.cols?.length || 0 }, observed: store.observed || null, searcher_built: !!store.searcher_built, sweep: { running: false, candidates: 0 } } : url === '/api/sweep/log' ? { log: '' } : url === '/api/candidates' ? { rows: [] } : url === '/frames' ? store.names : url === '/data/param.json' ? store.param : url === '/data/marks.json' ? store.marks : null;
+    const data = url === '/api/state' ? { frames: store.names, param: store.param, marks: { columns: store.marks?.cols?.length || 0 }, observed: store.observed || null, searcher_built: !!store.searcher_built, sweep: { running: !!store.running, candidates: 0 } } : url === '/api/observation' ? store.observation : url === '/api/sweep/log' ? { log: '' } : url === '/api/candidates' ? { rows: [] } : url === '/frames' ? store.names : url === '/data/param.json' ? store.param : url === '/data/marks.json' ? store.marks : null;
     return { ok: !!data, status: data ? 200 : 404, json: async () => structuredClone(data || { error: 'not found: ' + url.split('/').pop() }) };
   };
   const names = ['document', 'Image', 'fetch', 'window', 'parent', 'location', 'ResizeObserver', 'devicePixelRatio', 'requestAnimationFrame', 'addEventListener', 'confirm', 'history', 'setInterval'];
@@ -397,31 +400,50 @@ test('标注页面恢复旧进度, 擦除可撤销, 清空也会自动保存', a
   } finally { env.restore(); }
 });
 
-test('粗筛参数导入整体校验且不启动搜索, 导出往返并把全部设置用于手动启动', async () => {
-  const store = { names: [], searcher_built: true, observed: { valid: 30, columns: 30, marker: 7, step_rate: 10 } };
+test('最终观测可无截图导入导出, 不改变画布或搜索设置, 仅手动启动搜索', async () => {
+  const store = { names: [], searcher_built: true, marks: { cols: [{ c: 0, y: 100, t: 'block' }], marker: 99 } };
+  const originalMarks = structuredClone(store.marks);
   const env = environment(await readFile(new URL('../web/index.html', import.meta.url), 'utf8'), store);
   const createURL = URL.createObjectURL, downloads = [];
   URL.createObjectURL = blob => { downloads.push(blob); return createURL.call(URL, blob); };
   try {
-    await import('../web/app.js?ui-search-parameters');
-    const get = id => env.ids.get(id), file = get('search-parameters-file');
-    const importText = async text => { file.files = [{ size: new Blob([text]).size, text: async () => text }]; await file.fire('change'); };
-    const parameters = { ...DEFAULT_SEARCH_PARAMETERS, tol: .35, offer: .7, range: [100, 200], spawn_lo: 3100, spawn_hi: 3250, cols: 4000, scales: '0.97,1.00,1.03', batch: 12345, device: 2 };
-    await importText(encodeSearchParameters(parameters));
-    assert.equal(get('tol').value, '0.35'); assert.equal(get('spawn-lo').value, '3100'); assert.equal(get('search-scales').value, parameters.scales); assert.equal(file.value, ''); assert.equal(env.post.length, 0);
-    const ids = ['tol', 'offer', 'seed-from', 'seed-to', 'spawn-lo', 'spawn-hi', 'search-cols', 'search-scales', 'search-batch', 'search-device'];
-    const before = ids.map(id => get(id).value), invalid = JSON.parse(encodeSearchParameters(parameters)); invalid.parameters.tol = .9; invalid.parameters.offer = 2;
-    for (const text of ['{', JSON.stringify(invalid), JSON.stringify({ ...invalid, version: 999 })]) { await importText(text); assert.deepEqual(ids.map(id => get(id).value), before); assert.equal(env.post.length, 0); }
-    let readLarge = false; file.files = [{ size: 65537, text: async () => { readLarge = true; return ''; } }]; await file.fire('change'); assert.equal(readLarge, false); assert.deepEqual(ids.map(id => get(id).value), before);
-    let release; file.files = [{ size: 1, text: () => new Promise(resolve => { release = resolve; }) }]; const first = file.fire('change');
-    const latest = { ...parameters, batch: 999 }; await importText(encodeSearchParameters(latest)); release(encodeSearchParameters(parameters)); await first;
-    assert.equal(get('search-batch').value, '999'); assert.equal(env.post.length, 0);
-    await get('export-search-parameters').click(); assert.equal(downloads.length, 1); assert.deepEqual(decodeSearchParameters(await downloads[0].text()), latest);
-    assert.ok(env.elements.some(element => element.tagName === 'A' && element.download?.endsWith('.json')));
-    assert.equal(get('start').disabled, false); await get('start').click();
-    const starts = env.post.filter(post => post.url === '/api/sweep'); assert.equal(starts.length, 1); assert.deepEqual(starts[0].data, latest);
-    get('offer').value = '2'; await get('start').click(); assert.equal(env.post.filter(post => post.url === '/api/sweep').length, 1);
+    await import('../web/app.js?ui-final-observation');
+    const get = id => env.ids.get(id), file = get('observation-file');
+    const upload = async text => { file.files = [{ size: new Blob([text]).size, text: async () => text }]; await file.fire('change'); };
+    const observation = { format: 'terraria-seed-searcher/observation', version: 1, heights: [0, -999, .125, 2.375], marker: 2 };
+    assert.equal(get('export-observation').disabled, true); get('tol').value = '0.35';
+    await upload('\uFEFF' + JSON.stringify(observation)); assert.equal(file.value, '');
+    assert.deepEqual(store.observation, observation); assert.deepEqual(store.marks, originalMarks); assert.equal(store.param, undefined); assert.equal(get('tol').value, '0.35');
+    assert.equal(env.post.filter(post => post.url === '/api/sweep').length, 0); assert.equal(get('start').disabled, false);
+    const settle = () => new Promise(resolve => setImmediate(resolve));
+    await get('tabs').fire('click', { target: { closest: () => get('tab-search') } }); await settle();
+    assert.equal(get('tab-search').getAttribute('aria-selected'), 'true'); assert.equal(env.elements.filter(e => e.tagName === 'IFRAME').length, 0);
+    await get('export-observation').click(); assert.equal(downloads.length, 1); assert.deepEqual(JSON.parse(await downloads[0].text()), observation);
+    const count = env.post.length;
+    for (const text of ['{', '{}', JSON.stringify({ ...observation, version: 999 })]) { await upload(text); assert.equal(env.post.length, count); assert.deepEqual(store.observation, observation); }
+    globalThis.confirm = () => false; await upload(JSON.stringify({ ...observation, marker: 3 })); assert.equal(env.post.length, count); globalThis.confirm = () => true;
+    store.fail = true; await upload(JSON.stringify({ ...observation, marker: 3 })); assert.deepEqual(store.observation, observation); store.fail = false;
+    let readLarge = false; file.files = [{ size: 8 * 1024 * 1024 + 1, text: async () => { readLarge = true; return ''; } }]; await file.fire('change'); assert.equal(readLarge, false);
+    await get('start').click(); const starts = env.post.filter(post => post.url === '/api/sweep'); assert.equal(starts.length, 1); assert.deepEqual(starts[0].data, { ...DEFAULT_SEARCH_PARAMETERS, tol: .35 });
+    store.running = true; await get('refresh').click(); assert.equal(get('import-observation').disabled, true);
   } finally { URL.createObjectURL = createURL; env.restore(); }
+});
+
+test('导入最终观测前等待旧编辑器保存, 后续进入搜索不会用旧画布覆盖导入数据', async () => {
+  const frame = { id: 'a', src: 'frames/a.png', x: 0, y: 0, tile: 20, tileY: 20 };
+  const store = { names: ['a.png'], param: { version: 1, frames: [frame] }, marks: { cols: [{ c: 0, y: 50, t: 'block' }] } };
+  let pending = false, release, markCreated = 0;
+  store.editorFactory = tab => { if (tab === 'mark') markCreated++; return { flush: async () => { if (pending) { pending = false; await new Promise(resolve => { release = resolve; }); store.observed = { source: 'manual', marker: 99 }; } } }; };
+  const env = environment(await readFile(new URL('../web/index.html', import.meta.url), 'utf8'), store), settle = () => new Promise(resolve => setImmediate(resolve));
+  try {
+    await import('../web/app.js?ui-observation-save-order'); const get = id => env.ids.get(id); await get('go-grid').click(); pending = true;
+    const observation = { format: 'terraria-seed-searcher/observation', version: 1, heights: [0, 1, -999, 2], marker: 2 }, text = JSON.stringify(observation);
+    get('observation-file').files = [{ size: text.length, text: async () => text }]; const importing = get('observation-file').fire('change'); await settle();
+    assert.equal(env.post.length, 0); assert.equal(get('start').disabled, true); release(); await importing;
+    assert.deepEqual(store.observation, observation); assert.equal(store.observed.source, 'import');
+    await get('tabs').fire('click', { target: { closest: () => get('tab-search') } }); await settle();
+    assert.equal(get('tab-search').getAttribute('aria-selected'), 'true'); assert.equal(markCreated, 0); assert.equal(store.observed.marker, 2);
+  } finally { env.restore(); }
 });
 
 test('网格, 拼接和标注按顺序继承, 返回修改后不会被旧编辑器覆盖', async () => {

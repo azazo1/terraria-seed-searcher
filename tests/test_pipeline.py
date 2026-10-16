@@ -11,6 +11,7 @@ from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 import serve
+import observation_archive
 
 
 class PipelineTest(unittest.TestCase):
@@ -83,6 +84,67 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual((serve.DATA / "observed.txt").read_text(), original)
         self.call("/api/marks", {"version": 2, "tile": 20, "marker": 1, "cols": []})
 
+    def test_final_observation_roundtrip_without_screenshots_or_canvas_changes(self):
+        self.call("/api/frames", {"version": 3, "frames": [{"id": "a", "src": "frames/missing.png", "tile": 20}]})
+        self.call("/api/marks", {"version": 2, "tile": 20, "marker": 2, "cols": [{"c": 0, "y": 10, "t": "block"}, {"c": 1, "y": 30, "t": "tree"}, {"c": 3, "y": 57.5, "t": "block"}]})
+        _, exported = self.call("/api/observation")
+        observation = json.loads(exported)
+        self.assertEqual(observation, {"format": observation_archive.FORMAT, "version": 1, "heights": [0, -999, -999, 2.375], "marker": 2})
+        self.call("/api/marks", {"version": 2, "tile": 20, "marker": 99, "cols": [{"c": 0, "y": 100, "t": "block"}]})
+        before = {name: (serve.DATA / name).read_bytes() for name in ("param.json", "marks.json")}
+        with patch.object(serve, "FRAMES", serve.DATA / "nonexistent-images"):
+            self.call("/api/observation", observation)
+            _, state = self.call("/api/state")
+            self.assertEqual(json.loads(state)["frames"], [])
+            self.assertEqual(json.loads(state)["observed"]["source"], "import")
+        for name, content in before.items():
+            self.assertEqual((serve.DATA / name).read_bytes(), content)
+        _, again = self.call("/api/observation")
+        self.assertEqual(json.loads(again), observation)
+        self.assertEqual([float(y) for y in (serve.DATA / "observed.txt").read_text().split()], observation["heights"])
+        command = serve.sweep_command({})
+        self.assertEqual(command[command.index("--marker") + 1], "2")
+        self.assertFalse((serve.DATA / "shapes.json").exists())
+        self.call("/api/marks", {"version": 2, "tile": 20, "marker": 99, "cols": [{"c": 0, "y": 100, "t": "block"}]})
+        self.assertEqual(serve.observation_marker(), 99)
+
+    def test_observation_rejects_invalid_data_and_running_search_without_changes(self):
+        observation = {"format": observation_archive.FORMAT, "version": 1, "heights": [0, -999, 1.125], "marker": 1}
+        self.call("/api/observation", observation)
+        before = {name: (serve.DATA / name).read_bytes() for name in ("observed.txt", "observed_meta.json")}
+        for invalid in [{}, {**observation, "version": 99}, {**observation, "heights": []}, {**observation, "heights": [-999]}, {**observation, "heights": [float("nan")]}, {**observation, "heights": [10 ** 500]}, {**observation, "heights": [True]}, {**observation, "heights": [0] * 100001}, {**observation, "marker": -1}, {**observation, "marker": True}]:
+            with self.subTest(invalid=str(invalid)[:80]), self.assertRaises(HTTPError) as error:
+                self.call("/api/observation", invalid)
+            self.assertEqual(error.exception.code, 400)
+            error.exception.close()
+        class Running:
+            def poll(self):
+                return None
+        with patch.dict(serve.SWEEP, {"proc": Running()}), self.assertRaises(HTTPError) as error:
+            self.call("/api/observation", observation)
+        self.assertEqual(error.exception.code, 409)
+        error.exception.close()
+        for name, content in before.items():
+            self.assertEqual((serve.DATA / name).read_bytes(), content)
+
+    def test_observation_write_failure_restores_previous_search_inputs(self):
+        self.call("/api/marks", {"version": 2, "tile": 20, "marker": 7, "cols": [{"c": 0, "y": 100, "t": "block"}]})
+        before = {name: (serve.DATA / name).read_bytes() for name in ("observed.txt", "observed_meta.json", "shapes.json")}
+        original = Path.replace
+        failed = False
+        def fail_once(path, target):
+            nonlocal failed
+            if Path(target) == serve.DATA / "observed_meta.json" and not failed:
+                failed = True
+                raise OSError("injected replacement failure")
+            return original(path, target)
+        with patch.object(Path, "replace", fail_once), self.assertRaises(HTTPError) as error:
+            self.call("/api/observation", {"format": observation_archive.FORMAT, "version": 1, "heights": [0, 2], "marker": 1})
+        self.assertEqual(error.exception.code, 500)
+        error.exception.close()
+        for name, content in before.items():
+            self.assertEqual((serve.DATA / name).read_bytes(), content)
+
     def test_importable_search_parameters_reach_the_search_command(self):
         self.call("/api/marks", {"version": 2, "tile": 20, "marker": 7, "cols": []})
         params = {"tol": 0.35, "offer": 0.7, "range": [100, 200], "spawn_lo": 3100, "spawn_hi": 3250, "cols": 4000, "scales": "0.97,1.00,1.03", "batch": 12345, "device": 2}
@@ -111,7 +173,7 @@ class PipelineTest(unittest.TestCase):
                 self.assertTrue(response.url.endswith(path))
 
     def test_new_assets_and_traversal_boundary(self):
-        for path in ("/", "/web/ui.css", "/web/grid.css", "/web/grid.js", "/web/grid-model.js", "/web/frame-schema.js", "/web/frame-geometry.js", "/web/editor-core.js", "/web/calib.js", "/web/mark.js", "/web/observation.js", "/web/app.js", "/web/search-parameters.js", "/web/search-controls.js"):
+        for path in ("/", "/web/ui.css", "/web/grid.css", "/web/grid.js", "/web/grid-model.js", "/web/frame-schema.js", "/web/frame-geometry.js", "/web/editor-core.js", "/web/calib.js", "/web/mark.js", "/web/observation.js", "/web/app.js", "/web/search-parameters.js", "/web/search-controls.js", "/web/observation-transfer.js"):
             with self.subTest(path=path):
                 code, body = self.call(path)
                 self.assertEqual(code, 200)

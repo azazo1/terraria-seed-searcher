@@ -32,7 +32,10 @@
     <section id="pane-calib" role="tabpanel" aria-labelledby="tab-calib" class="app-pane editor-pane" hidden></section>
     <section id="pane-mark" role="tabpanel" aria-labelledby="tab-mark" class="app-pane editor-pane" hidden></section>
     <section id="pane-search" role="tabpanel" aria-labelledby="tab-search" class="app-pane scroll-pane" hidden>
-      <div class="content-stack"><div class="panel stack"><h2>搜索准备</h2><p class="hint">使用上一步自动生成的观测. 开始前会检查有效列和搜索器.</p><dl id="search-info" class="kv"></dl><p id="diagnostic" class="hint"></p></div>
+      <div class="content-stack"><div class="panel stack" id="search-preparation"><h2>搜索准备</h2><p class="hint">使用标注生成的最终观测, 或直接导入已有观测数据. 不需要截图匹配, 导入不会启动搜索.</p><dl id="search-info" class="kv"></dl><p id="diagnostic" class="hint"></p>
+          <div class="actions"><button id="export-observation" disabled>导出观测数据</button><button id="import-observation">导入观测数据</button><input id="observation-file" type="file" accept="application/json,.json" hidden></div>
+          <p id="observation-status" class="hint" role="status" aria-live="polite"></p><p class="hint">文件仅包含以格为单位的逐列高度 (缺失或作废列为 -999) 和出生点观测列号. 不包含截图, 标定, 拼接, 画布标记或搜索设置. 后续保存人工标注会重新生成观测.</p>
+        </div>
         <div class="panel stack"><h2>粗筛设置</h2>
           <div class="fields"><label class="field">容差<input type="number" id="tol" value="0.5" step="any" min="0.01" max="10"></label><label class="field">最低得分<input type="number" id="offer" value="0.55" step="any" min="0" max="1"></label></div>
           <details id="search-advanced"><summary>高级参数 (含出生点范围)</summary><div class="fields">
@@ -40,9 +43,8 @@
             <label class="field">出生点世界列下限<input type="number" id="spawn-lo" min="0" max="8399" step="1" value="3180"></label><label class="field">出生点世界列上限<input type="number" id="spawn-hi" min="0" max="8399" step="1" value="3220"></label>
             <label class="field">模拟列数<input type="number" id="search-cols" min="1" max="8400" step="1" value="3400"></label><label class="field">搜索尺度 (英文逗号分隔)<input type="text" id="search-scales" value="1.00"></label>
             <label class="field">批大小<input type="number" id="search-batch" min="1" max="2147483647" step="1" value="400000"></label><label class="field">GPU 编号<input type="number" id="search-device" min="0" max="1024" step="1" value="0"></label>
-          </div><p class="hint">默认参数与此前搜索一致. 搜索尺度调整粗筛的列间距, 不是图片缩放. 出生点观测列仍在标注页设置, 不随参数文件导入.</p></details>
-          <div class="actions"><button id="export-search-parameters">导出参数</button><button id="import-search-parameters">导入参数</button><input id="search-parameters-file" type="file" accept="application/json,.json" hidden></div>
-          <p id="search-parameters-status" class="hint" role="status" aria-live="polite"></p><p class="hint">参数文件仅包含搜索设置. 导入校验通过后整体替换表单, 不会自动启动搜索. 调低最低得分会保留更多候选.</p>
+          </div><p class="hint">默认参数与此前搜索一致. 搜索尺度调整粗筛的列间距, 不是图片缩放. 出生点观测列来自最终观测数据.</p></details>
+          <p class="hint">调低最低得分会保留更多候选.</p>
           <div class="actions"><button id="start" class="primary" disabled>开始搜索</button><button id="stop" disabled>停止搜索</button><button id="go-candidates">查看候选 →</button></div>
         </div>
         <div class="panel stack"><h2>运行输出</h2><pre id="log">搜索尚未启动.</pre></div>

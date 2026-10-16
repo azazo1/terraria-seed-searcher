@@ -2,6 +2,7 @@
 import { $, frameName, request } from './editor-core.js';
 import { migrateParam } from './frame-schema.js';
 import { bindSearchParameters } from './search-controls.js';
+import { bindObservationTransfer } from './observation-transfer.js';
 const labels = {
   import: ['导入主播截图', '导入原始截图, 然后逐张标定方块网格.'],
   grid: ['网格标定', '左键选第一条, 右键选第二条. Ctrl 拖动已选线平移相位, 左侧可调整间隔格数.'],
@@ -10,10 +11,36 @@ const labels = {
   search: ['粗筛搜索', '使用已保存的最新观测进行搜索.'],
   candidates: ['查看候选', '查看搜索产出的候选记录.']
 };
-let active = 'import', state = null, switching = false, polling = false, uploading = false;
+let active = 'import', state = null, switching = false, polling = false, uploading = false, transferring = false;
 let frameKey = '', candidateKey = '', lastRun = false, stateRequest = 0;
 const editors = new Map();
-const searchParameters = bindSearchParameters(toast);
+const searchParameters = bindSearchParameters();
+bindObservationTransfer({
+  run: transferObservation,
+  exportData: async () => {
+    if (state.observed?.source !== 'import' && state.marks?.columns && calibrationCurrent()) {
+      await ensureEditor('mark'); await editors.get('mark').iframe.contentWindow.editorBridge.flush();
+    }
+    return request('/api/observation');
+  },
+  importData: observation => request('/api/observation', observation),
+  onError: toast
+});
+async function transferObservation(operation) {
+  if (switching || uploading) throw new Error('请等待当前操作完成.');
+  switching = transferring = true; document.body.setAttribute('aria-busy', 'true');
+  for (const id of ['export-observation', 'import-observation', 'start']) $(id).disabled = true;
+  try {
+    // 先结束旧编辑器的保存, 防止其延迟请求覆盖随后导入的最终观测.
+    for (const editor of editors.values()) {
+      await editor.loaded; await editor.iframe.contentWindow.editorBridge.flush();
+    }
+    await refreshState(); return await operation();
+  } finally {
+    switching = transferring = false; document.body.removeAttribute('aria-busy');
+    try { await refreshState(); } catch (error) { toast('无法更新状态: ' + error.message, true); }
+  }
+}
 function toast(message, error = false) {
   const container = $('app-notice'); container.hidden = !message; container.classList.toggle('error', error); container.replaceChildren();
   if (!message) return;
@@ -54,7 +81,7 @@ async function switchTab(tab, { updateHash = true } = {}) {
     if (['grid', 'calib'].includes(tab) && !state.frames.length) { toast('请先导入至少一张截图.'); return; }
     if (tab === 'calib' && !calibrationCurrent()) { toast('请先进入网格标定步骤. 各张图片的标定会自动传到拼接步骤.'); return; }
     if (tab === 'mark' && (!calibrationCurrent() || !state.param?.frames?.some(f => f.on !== false))) { toast('请先标定网格, 再在图片拼接步骤中显示至少一张图片.'); return; }
-    if (['search', 'candidates'].includes(tab) && state.marks?.columns) {
+    if (['search', 'candidates'].includes(tab) && state.marks?.columns && state.observed?.source !== 'import') {
       if (!calibrationCurrent()) { toast('截图列表已变化, 请先进入网格标定步骤确认.'); return; }
       // 跨过标注 Tab 时也先继承最新格宽并生成观测, 避免搜索旧参数.
       await ensureEditor('mark');
@@ -108,7 +135,9 @@ function renderState(st) {
   $('nav-candidates').textContent = sweep.candidates ? `${Math.round(sweep.candidates / 1024)} KB 结果` : '暂无候选';
   kv($('search-info'), [['搜索器', st.searcher_built ? '已编译' : '未编译, 请先在 CUDA 机器运行 just build'], ['观测', obs ? `${obs.valid} 个有效列 / ${obs.columns} 列` : '尚无有效观测'], ['出生点列', obs?.marker ?? '-'], ['状态', sweep.running ? `运行中 ${duration(sweep.elapsed)}` : '空闲']]);
   $('diagnostic').textContent = obs ? `台阶率 ${obs.step_rate}%. ${obs.step_rate < 3 ? '偏低, 建议检查格宽.' : obs.step_rate > 20 ? '偏高, 建议检查标注.' : '可回到标注步骤继续检查.'}` : '请先在标注步骤标出地表, 观测会自动生成.';
-  $('start').disabled = sweep.running || !st.searcher_built || !obs; $('stop').disabled = !sweep.running;
+  if (obs?.source === 'import') $('diagnostic').textContent = `台阶率 ${obs.step_rate}%. 已导入最终观测, 无需截图或标注画布即可搜索.`;
+  $('start').disabled = transferring || sweep.running || !st.searcher_built || !obs; $('stop').disabled = !sweep.running;
+  $('export-observation').disabled = transferring || !obs; $('import-observation').disabled = transferring || sweep.running;
   if ((active === 'search' && sweep.running) || (lastRun && !sweep.running)) loadLog().catch(e => toast(e.message, true));
   if (active === 'candidates' && String(sweep.candidates) !== candidateKey) loadCandidates().catch(e => toast(e.message, true));
   lastRun = !!sweep.running;
