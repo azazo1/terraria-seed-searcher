@@ -25,7 +25,11 @@ export function inheritObservation(stored, frames) {
 export function snapPoint(point, list, origin, tile) {
   const f = [...list].reverse().find(f => f.on !== false && f.img?.naturalWidth && point.x >= f.x && point.x <= f.x + f.img.naturalWidth && point.y >= f.y && point.y <= f.y + f.img.naturalHeight);
   if (!f) return null;
-  const col = Math.round((point.x - origin) / tile); if (col < 0) return null;
-  const ybase = f.y + f.phaseY;
-  return { col, x: origin + col * tile, y: ybase + Math.round((point.y - ybase) / f.tileY) * f.tileY, f };
+  const width = f.tile, height = f.tileY;
+  const left = f.x + f.phaseX + Math.floor((point.x - f.x - f.phaseX) / width) * width;
+  const top = f.y + f.phaseY + Math.floor((point.y - f.y - f.phaseY) / height) * height;
+  const x = left + width / 2, y = top + height / 2;
+  const col = Math.floor((x - origin) / tile); if (col < 0) return null;
+  // 显示使用方块中心, 保存的地表高度仍使用上边缘.
+  return { col, x, y, surfaceY: top, left, top, width, height, f };
 }

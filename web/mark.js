@@ -13,7 +13,7 @@ let ready = false, saved = '', grid = .35, markerMode = false, inputBefore = nul
 const history = new History(), autosave = new Autosave(save, () => dirty());
 let resolveReady, rejectReady;
 const whenReady = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; }); whenReady.catch(() => {});
-window.editorBridge = { flush: async () => { await whenReady; await autosave.flush(); }, diagnostics: () => ({ ready, marks: marks.size, dirty: dirty(), paints: view.frames, paintMs: view.lastPaintMs }) };
+window.editorBridge = { flush: async () => { await whenReady; await autosave.flush(); }, diagnostics: () => ({ ready, marks: marks.size, tile: T, x0, zoom: view.zoom, panX: view.panX, panY: view.panY, dirty: dirty(), paints: view.frames, paintMs: view.lastPaintMs }) };
 if (parent !== window) document.body.classList.add('embedded');
 const snapshot = () => ({ cols: [...marks].map(([c, m]) => ({ c, ...m })).sort((a, b) => a.c - b.c), marker });
 const fingerprint = () => JSON.stringify(snapshot());
@@ -24,16 +24,20 @@ const view = new Viewport($('workspace'), (ctx, v) => {
   const b = v.bounds, radius = 4 / v.zoom;
   if ($('show-marks').checked) {
     for (const [col, m] of marks) {
-      const x = x0 + col * T;
-      if (x < b.x - T || x > b.right + T || m.y < b.y - 300 || m.y > b.bottom + 300) continue;
+      const cell = pick({ x: x0 + (col + .5) * T, y: m.y + .001 });
+      if (!cell) continue;
+      const { x, y, left, top, width, height } = cell;
+      if (left > b.right || left + width < b.x || top > b.bottom || top + height < b.y) continue;
+      const r = Math.min(radius, width / 5, height / 5);
       const item = TOOLS.find(t => t.id === m.t) || TOOLS[0]; ctx.fillStyle = item.color; ctx.strokeStyle = item.color; ctx.lineWidth = 2 / v.zoom;
-      if (m.t === 'tree') { ctx.globalAlpha = .2; ctx.fillRect(x - T / 2, m.y - 100, T, 200); ctx.globalAlpha = 1; ctx.beginPath(); ctx.moveTo(x - radius, m.y - radius); ctx.lineTo(x + radius, m.y + radius); ctx.moveTo(x + radius, m.y - radius); ctx.lineTo(x - radius, m.y + radius); ctx.stroke(); }
-      else if (m.t === 'block') { ctx.fillRect(x - radius, m.y - radius, radius * 2, radius * 2); }
-      else { ctx.beginPath(); ctx.moveTo(x - radius * 1.5, m.y + (m.t === 'slopeL' ? -radius : radius)); ctx.lineTo(x + radius * 1.5, m.y + (m.t === 'slopeL' ? radius : -radius)); ctx.stroke(); }
+      ctx.globalAlpha = .2; ctx.fillRect(left, top, width, height); ctx.globalAlpha = 1;
+      if (m.t === 'tree') { ctx.beginPath(); ctx.moveTo(x - r, y - r); ctx.lineTo(x + r, y + r); ctx.moveTo(x + r, y - r); ctx.lineTo(x - r, y + r); ctx.stroke(); }
+      else if (m.t === 'block') { ctx.fillRect(x - r, y - r, r * 2, r * 2); }
+      else { ctx.beginPath(); ctx.moveTo(x - r * 1.5, y + (m.t === 'slopeL' ? -r : r)); ctx.lineTo(x + r * 1.5, y + (m.t === 'slopeL' ? r : -r)); ctx.stroke(); }
     }
   }
   if ($('show-marker').checked) {
-    const x = x0 + marker * T;
+    const x = x0 + (marker + .5) * T;
     ctx.strokeStyle = '#ffffffb8'; ctx.lineWidth = 1.5 / v.zoom; ctx.setLineDash([6 / v.zoom, 4 / v.zoom]);
     ctx.beginPath(); ctx.moveTo(x, b.y); ctx.lineTo(x, b.bottom); ctx.stroke(); ctx.setLineDash([]);
     ctx.font = `${12 / v.zoom}px sans-serif`; ctx.fillStyle = '#fff'; ctx.fillText(`出生点 ${marker}`, x + 6 / v.zoom, b.y + 65 / v.zoom);
@@ -42,8 +46,8 @@ const view = new Viewport($('workspace'), (ctx, v) => {
     const color = markerMode ? '#fff' : TOOLS.find(t => t.id === tool).color;
     ctx.strokeStyle = color; ctx.lineWidth = 1 / v.zoom; ctx.setLineDash([3 / v.zoom, 3 / v.zoom]);
     ctx.beginPath(); ctx.moveTo(hover.x, b.y); ctx.lineTo(hover.x, b.bottom); ctx.moveTo(b.x, hover.y); ctx.lineTo(b.right, hover.y); ctx.stroke(); ctx.setLineDash([]);
-    ctx.fillStyle = color; ctx.globalAlpha = .25; ctx.fillRect(hover.x - T / 2, hover.y, T, hover.f.tileY); ctx.globalAlpha = 1;
-    ctx.beginPath(); ctx.arc(hover.x, hover.y, 6 / v.zoom, 0, Math.PI * 2); ctx.stroke();
+    ctx.fillStyle = color; ctx.globalAlpha = .25; ctx.fillRect(hover.left, hover.top, hover.width, hover.height); ctx.globalAlpha = 1;
+    ctx.beginPath(); ctx.arc(hover.x, hover.y, Math.min(6 / v.zoom, hover.width / 3, hover.height / 3), 0, Math.PI * 2); ctx.stroke();
   }
 });
 bindViewButtons(view, () => frames); installLeaveGuard(dirty);
@@ -80,7 +84,7 @@ function pick(point) { return point && snapPoint(point, frames, x0, T); }
 function paint(point) {
   if (!point) return;
   if (tool === 'erase') marks.delete(point.col);
-  else marks.set(point.col, { y: Math.round(point.y * 1000) / 1000, t: tool });
+  else marks.set(point.col, { y: Math.round(point.surfaceY * 1000) / 1000, t: tool });
   view.invalidate(false);
 }
 bindPan(view, (point, e) => {
@@ -90,14 +94,14 @@ bindPan(view, (point, e) => {
   const before = snapshot(); paint(p); hover = p; return { kind: 'paint', before, last: p };
 }, (point, drag) => {
   hover = pick(point);
-  if (hover) $('cursor').textContent = `列 ${hover.col} · 高度 ${hover.y.toFixed(2)} px · ${hover.f.id}`;
+  if (hover) $('cursor').textContent = `列 ${hover.col} · 地表高度 ${hover.surfaceY.toFixed(2)} px · ${hover.f.id}`;
   if (drag && hover) {
     // 连接事件间经过的列, 避免快速拖动时出现漏列.
     const last = drag.last, span = hover.col - last.col;
     if (span && Math.abs(span) < 4000) {
       for (let c = last.col; c !== hover.col; c += Math.sign(span)) {
         const ratio = (c - last.col) / span;
-        paint(pick({ x: x0 + c * T, y: last.y + (hover.y - last.y) * ratio }));
+        paint(pick({ x: x0 + (c + .5) * T, y: last.y + (hover.y - last.y) * ratio }));
       }
     }
     paint(hover); drag.last = hover;
@@ -154,7 +158,7 @@ try {
   else {
     frames = result.frames.filter(f => f.on && !f.failed);
     let stored = null;
-    try { stored = await request('/data/marks.json'); } catch (e) { if (!e.message.includes('404')) throw e; }
+    try { stored = await request('/data/marks.json'); } catch (e) { if (e.status !== 404) throw e; }
     const inherited = inheritObservation(stored, frames);
     T = inherited.tile; x0 = inherited.x0; marker = inherited.marker;
     marks = new Map(inherited.cols.map(({ c, y, t }) => [c, { y, t }]));

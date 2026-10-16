@@ -11,7 +11,9 @@ export async function request(url, body) {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
   }) });
   const data = await response.json();
-  if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
+  if (!response.ok || data.ok === false) {
+    const error = new Error(data.error || `HTTP ${response.status}`); error.status = response.status; throw error;
+  }
   return data;
 }
 export function notify(message = '', error = false) {
@@ -27,7 +29,7 @@ export class History {
 export async function loadFrames(fresh = false) {
   const names = await request('/frames');
   let saved = null;
-  if (!fresh) { try { saved = migrateParam(await request('/data/param.json')); } catch (e) { if (!e.message.includes('404')) throw e; } }
+  if (!fresh) { try { saved = migrateParam(await request('/data/param.json')); } catch (e) { if (e.status !== 404) throw e; } }
   const namesSet = new Set(names);
   const frames = (saved?.frames || []).filter(f => namesSet.has(frameName(f.src))).map(normalizeFrame);
   const used = new Set(frames.map(f => frameName(f.src)));

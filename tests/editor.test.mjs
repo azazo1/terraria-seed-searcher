@@ -91,9 +91,16 @@ test('旧参数迁移保留网格与拼接, 新版保存后保留双线标定状
 const image = { naturalWidth: 1000, naturalHeight: 600 };
 const frame = { id: 'a', src: 'frames/a.png', x: 100, y: 200, tile: 20, tileY: 30, phaseX: 3, phaseY: 7, on: true, img: image };
 
-test('垂直吸附包含图片位移与相位, 使用格高', () => {
+test('吸附鼠标所在方块的中心, 使用当前图片格宽格高, 地表保留上边缘', () => {
   const p = snapPoint({ x: 144, y: 263 }, [frame], 103, 20);
-  assert.equal(p.col, 2); assert.equal(p.x, 143); assert.equal(p.y, 267);
+  assert.equal(p.col, 2); assert.equal(p.x, 153); assert.equal(p.y, 252); assert.equal(p.surfaceY, 237);
+  assert.deepEqual([p.left, p.top, p.width, p.height], [143, 237, 20, 30]);
+  const otherCorner = snapPoint({ x: 162.99, y: 237.01 }, [frame], 103, 20);
+  assert.equal(otherCorner.col, p.col); assert.equal(otherCorner.x, p.x); assert.equal(otherCorner.y, p.y);
+  const next = snapPoint({ x: 163, y: 267 }, [frame], 103, 20);
+  assert.equal(next.col, 3); assert.equal(next.x, 173); assert.equal(next.y, 282); assert.equal(next.surfaceY, 267);
+  const small = snapPoint({ x: 144, y: 263 }, [{ ...frame, tile: 10, tileY: 10 }], 103, 20);
+  assert.equal(small.width, 10); assert.equal(small.height, 10); assert.equal(small.x, 148); assert.equal(small.y, 262);
   assert.equal(snapPoint({ x: 10, y: 10 }, [frame], 103, 20), null);
   assert.equal(snapPoint({ x: 144, y: 263 }, [{ ...frame, on: false }], 103, 20), null);
 });

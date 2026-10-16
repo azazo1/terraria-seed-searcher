@@ -4,8 +4,8 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 function environment(html, store) {
-  const elements = [], ids = new Map(), events = new Map(), raf = [];
-  const ctx = new Proxy({}, { get: (_target, key) => key === 'measureText' ? () => ({ width: 20 }) : () => {}, set: () => true });
+  const elements = [], ids = new Map(), events = new Map(), raf = [], draw = [];
+  const ctx = new Proxy({}, { get: (_target, key) => key === 'measureText' ? () => ({ width: 20 }) : (...args) => draw.push([key, ...args]), set: () => true });
   class Element {
     constructor(tag) { this.tagName = tag.toUpperCase(); this.children = []; this.handlers = new Map(); this.attributes = {}; this.dataset = {}; this.style = { setProperty() {} }; this.className = ''; this.value = ''; this.checked = false; this.disabled = false; this.hidden = false; this.clientWidth = 1000; this.clientHeight = 700; this.parentNode = null; elements.push(this); }
     get classList() { return { contains: c => this.className.split(' ').includes(c), add: c => this.className = [...new Set([...this.className.split(' '), c])].join(' '), remove: c => this.className = this.className.split(' ').filter(x => x !== c).join(' '), toggle: (c, on) => { const has = this.className.split(' ').includes(c); this.classList[(on ?? !has) ? 'add' : 'remove'](c); } }; }
@@ -57,13 +57,14 @@ function environment(html, store) {
       if (url === '/api/marks') store.marks = structuredClone(data);
       return { ok: true, json: async () => ({ ok: true, observed: data.cols?.length ? { valid: data.cols.length, step_rate: 10 } : null }) };
     }
+    if (store.readFailure?.url === url) return { ok: false, status: store.readFailure.status, json: async () => ({ error: store.readFailure.error }) };
     const data = url === '/api/state' ? { frames: store.names, param: store.param, marks: { columns: store.marks?.cols?.length || 0 }, observed: null, searcher_built: false, sweep: { running: false, candidates: 0 } } : url === '/api/sweep/log' ? { log: '' } : url === '/api/candidates' ? { rows: [] } : url === '/frames' ? store.names : url === '/data/param.json' ? store.param : url === '/data/marks.json' ? store.marks : null;
-    return { ok: !!data, status: data ? 200 : 404, json: async () => structuredClone(data || { error: 'HTTP 404' }) };
+    return { ok: !!data, status: data ? 200 : 404, json: async () => structuredClone(data || { error: 'not found: ' + url.split('/').pop() }) };
   };
   const names = ['document', 'Image', 'fetch', 'window', 'parent', 'location', 'ResizeObserver', 'devicePixelRatio', 'requestAnimationFrame', 'addEventListener', 'confirm', 'history', 'setInterval'];
   const before = new Map(names.map(k => [k, globalThis[k]]));
   Object.assign(globalThis, { document: doc, Image, fetch, window: globalThis, parent: globalThis, location: new URL('http://localhost/web/calib.html'), history: { replaceState(_state, _title, url) { globalThis.location.hash = url; } }, setInterval: () => 0, ResizeObserver: class { observe() {} }, devicePixelRatio: 1, requestAnimationFrame: fn => { raf.push(fn); return raf.length; }, addEventListener: doc.addEventListener, confirm: () => true });
-  return { ids, elements, post, doc, raf, events, restore() { for (const [key, value] of before) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; } delete globalThis.editorBridge; } };
+  return { ids, elements, post, doc, raf, draw, events, restore() { for (const [key, value] of before) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; } delete globalThis.editorBridge; } };
 }
 
 test('拼接页面继承网格, 锁定阻止拖动, 重排与撤销不重置标定', async () => {
@@ -248,6 +249,41 @@ test('macOS Firefox 只有 Ctrl mousedown 时仍能平移, 鼠标与指针事件
     await mouseWindow('mousemove', 140);
     for (const fn of env.events.get('blur') || []) await fn({ type: 'blur' });
     await mouseWindow('mouseup', 140); await bridge.flush(); near(store.param.frames[0].gridGuides.x.fixed, 120);
+  } finally { env.restore(); }
+});
+
+test('首次没有标注文件仍可开始, 预览只占一格并居中, 连续标注保存上边缘', async () => {
+  const frame = { id: 'a', src: 'frames/a.png', x: 100, y: 200, tile: 9.5, tileY: 9.5, phaseX: 2.25, phaseY: 4.125, on: true };
+  const store = { names: ['a.png'], param: { version: 2, frames: [frame] } };
+  const env = environment(await readFile(new URL('../web/mark.html', import.meta.url), 'utf8'), store);
+  try {
+    await import('../web/mark.js?ui-mark-first-run');
+    const bridge = globalThis.editorBridge, overlay = env.elements.filter(e => e.tagName === 'CANVAS').at(-1);
+    await bridge.flush(); assert.equal(bridge.diagnostics().ready, true); assert.equal(bridge.diagnostics().tile, 9.5); assert.equal(env.post.length, 0);
+    const point = (x, y) => { const d = bridge.diagnostics(); return { clientX: d.panX + x * d.zoom, clientY: d.panY + y * d.zoom }; };
+    const left = 140.25, top = 261.125, center = { x: 145, y: 265.875 };
+    await overlay.fire('pointermove', point(left + .5, top + .5));
+    env.draw.length = 0; while (env.raf.length) env.raf.shift()();
+    assert.ok(env.draw.some(c => c[0] === 'fillRect' && c[1] === left && c[2] === top && c[3] === 9.5 && c[4] === 9.5));
+    assert.ok(env.draw.some(c => c[0] === 'arc' && c[1] === center.x && c[2] === center.y));
+    await overlay.fire('pointerdown', point(left + .5, top + .5));
+    await overlay.fire('pointermove', point(center.x + 3 * frame.tile, center.y));
+    await overlay.fire('pointerup', point(center.x + 3 * frame.tile, center.y)); await bridge.flush();
+    assert.deepEqual(store.marks.cols.map(m => m.c), [4, 5, 6, 7]);
+    for (const m of store.marks.cols) { assert.equal(m.y, top); assert.equal(m.t, 'block'); }
+    assert.equal(store.marks.tile, frame.tile);
+    await env.ids.get('undo').click(); await bridge.flush(); assert.equal(store.marks.cols.length, 0);
+    await env.ids.get('redo').click(); await bridge.flush(); assert.equal(store.marks.cols.length, 4);
+  } finally { env.restore(); }
+});
+
+test('真实读取错误不能作为缺少标注文件忽略', async () => {
+  const store = { names: ['a.png'], param: { version: 2, frames: [{ id: 'a', src: 'frames/a.png', tile: 10 }] }, readFailure: { url: '/data/marks.json', status: 503, error: 'storage error 404' } };
+  const env = environment(await readFile(new URL('../web/mark.html', import.meta.url), 'utf8'), store);
+  try {
+    await import('../web/mark.js?ui-mark-read-failed');
+    await assert.rejects(globalThis.editorBridge.flush(), e => e.status === 503);
+    assert.equal(globalThis.editorBridge.diagnostics().ready, false); assert.equal(env.post.length, 0);
   } finally { env.restore(); }
 });
 
