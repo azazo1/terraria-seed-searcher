@@ -73,6 +73,16 @@ class PipelineTest(unittest.TestCase):
         self.assertIsNone(json.loads(state)["observed"])
         self.assertEqual(json.loads(state)["marks"]["columns"], 0)
 
+    def test_slope_types_and_blocks_produce_the_same_search_heights(self):
+        cols = [{"c": 0, "y": 10, "t": "slopeL"}, {"c": 1, "y": 30, "t": "slopeR"}, {"c": 2, "y": 50, "t": "block"}, {"c": 3, "y": 400, "t": "tree"}]
+        self.call("/api/marks", {"version": 2, "tile": 20, "marker": 1, "cols": cols})
+        original = (serve.DATA / "observed.txt").read_text()
+        self.assertEqual(original.strip(), "0.000 1.000 2.000")
+        blocks = [{**col, "t": "block"} if col["t"] != "tree" else col for col in cols]
+        self.call("/api/marks", {"version": 2, "tile": 20, "marker": 1, "cols": blocks})
+        self.assertEqual((serve.DATA / "observed.txt").read_text(), original)
+        self.call("/api/marks", {"version": 2, "tile": 20, "marker": 1, "cols": []})
+
     def test_search_result_is_read_from_searcher_output(self):
         output = serve.WORK / "candidates_gpu2.txt"
         output.write_text("seed=fixture spawn_x=3200 scale=1.00 score=0.9000\n", encoding="utf-8")

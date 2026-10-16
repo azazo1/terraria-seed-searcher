@@ -4,9 +4,7 @@ import { inheritObservation, MARKS_VERSION, snapPoint } from './observation.js';
 import { canvasPoint, gridGap, imagePoint } from './frame-geometry.js';
 const TOOLS = [
   { id: 'block', name: '完整方块', color: '#86e4ad', glyph: '■' },
-  { id: 'slopeL', name: '斜坡 左高右低', color: '#ffd185', glyph: '◣' },
-  { id: 'slopeR', name: '斜坡 右高左低', color: '#ffa16f', glyph: '◢' },
-  { id: 'tree', name: '树木 / 作废', color: '#f49fd3', glyph: '×' },
+  { id: 'tree', name: '作废', color: '#f49fd3', glyph: '×' },
   { id: 'erase', name: '擦除标记', color: '#a1b2c3', glyph: '⌫' }
 ];
 let frames = [], marks = new Map(), T = 20.86, x0 = 0, marker = 141, tool = 'block', hover = null;
@@ -35,8 +33,7 @@ const view = new Viewport($('workspace'), (ctx, v) => {
       const item = TOOLS.find(t => t.id === m.t) || TOOLS[0]; ctx.fillStyle = item.color; ctx.strokeStyle = item.color; ctx.lineWidth = 2 / v.zoom;
       ctx.globalAlpha = .2; ctx.fillRect(left, top, width, height); ctx.globalAlpha = 1;
       if (m.t === 'tree') { ctx.beginPath(); ctx.moveTo(x - r, y - r); ctx.lineTo(x + r, y + r); ctx.moveTo(x + r, y - r); ctx.lineTo(x - r, y + r); ctx.stroke(); }
-      else if (m.t === 'block') { ctx.fillRect(x - r, y - r, r * 2, r * 2); }
-      else { ctx.beginPath(); ctx.moveTo(x - r * 1.5, y + (m.t === 'slopeL' ? -r : r)); ctx.lineTo(x + r * 1.5, y + (m.t === 'slopeL' ? r : -r)); ctx.stroke(); }
+      else { ctx.fillRect(x - r, y - r, r * 2, r * 2); }
     }
   }
   if ($('show-marker').checked) {
@@ -55,10 +52,10 @@ const view = new Viewport($('workspace'), (ctx, v) => {
 });
 bindViewButtons(view, () => frames); installLeaveGuard(dirty);
 function stats() {
-  const count = { block: 0, slopeL: 0, slopeR: 0, tree: 0 };
+  const count = { block: 0, tree: 0 };
   for (const m of marks.values()) if (m.t in count) count[m.t]++;
   $('total').textContent = marks.size; $('valid').textContent = marks.size - count.tree;
-  $('stat').textContent = `方块 ${count.block} · 斜坡 ${count.slopeL + count.slopeR} · 作废 ${count.tree}`;
+  $('stat').textContent = `方块 ${count.block} · 作废 ${count.tree}`;
 }
 function changed() {
   stats(); $('marker').value = marker;
@@ -158,7 +155,7 @@ addEventListener('keydown', e => {
   if (editing(e.target)) return;
   if (mod && key === 'z') { e.preventDefault(); (e.shiftKey ? $('redo') : $('undo')).click(); }
   else if (mod && key === 'y') { e.preventDefault(); $('redo').click(); }
-  else if (!mod && /^[1-5]$/.test(key)) chooseTool(TOOLS[Number(key) - 1].id);
+  else if (!mod && /^[1-3]$/.test(key)) chooseTool(TOOLS[Number(key) - 1].id);
   else if (key === 'escape') chooseTool(tool);
   else if (!mod && key === 'f') $('fit').click();
 });

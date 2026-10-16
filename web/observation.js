@@ -9,12 +9,14 @@ export function inheritObservation(stored, frames) {
   const oldTile = stored.tile || tile;
   const oldLeft = [...(stored.frames || [])].sort((a, b) => a.x - b.x)[0];
   const oldOrigin = Number.isFinite(stored.x0) ? stored.x0 : (oldLeft?.x || 0);
-  const valid = (stored.cols || []).filter(m => Number.isSafeInteger(m.c) && m.c >= 0 && Number.isFinite(m.y));
+  const original = (stored.cols || []).filter(m => Number.isSafeInteger(m.c) && m.c >= 0 && Number.isFinite(m.y));
+  const convertedShapes = original.filter(m => m.t === 'slopeL' || m.t === 'slopeR').length;
+  const valid = original.map(m => m.t === 'slopeL' || m.t === 'slopeR' ? { ...m, t: 'block' } : m);
   const sameFrames = (stored.frames || []).length === frames.length && (stored.frames || []).every(old => {
     const f = frames.find(f => f.id === old.id);
     return f && scaleOf(f) === scaleOf(old) && ['x', 'y', 'tile', 'tileY', 'phaseX', 'phaseY'].every(k => f[k] === old[k]);
   });
-  if (sameFrames && oldTile === tile) return { tile, x0: oldOrigin, marker: stored.marker ?? 141, cols: valid, migrated: false, collisions: 0 };
+  if (sameFrames && oldTile === tile) return { tile, x0: oldOrigin, marker: stored.marker ?? 141, cols: valid, migrated: convertedShapes > 0, convertedShapes, collisions: 0 };
   // 新标注保存原图像素锚点. 旧标注只在缩放发生变化时尝试从旧布局恢复锚点.
   const oldFrames = (stored.frames || []).map(old => ({ ...old, img: frames.find(f => f.id === old.id)?.img }));
   const scaleChanged = oldFrames.some(old => { const f = frames.find(f => f.id === old.id); return f && scaleOf(f) !== scaleOf(old); });
@@ -47,7 +49,7 @@ export function inheritObservation(stored, frames) {
     cols.set(c, { ...mark, c });
   }
   const marker = Math.max(0, Math.round((markerX - x0) / tile));
-  return { tile, x0, marker, cols: [...cols.values()], migrated: true, collisions: valid.length - cols.size };
+  return { tile, x0, marker, cols: [...cols.values()], migrated: true, convertedShapes, collisions: valid.length - cols.size };
 }
 export function snapPoint(point, list, origin, tile) {
   const f = findFrame(list, point);

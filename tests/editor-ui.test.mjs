@@ -352,6 +352,24 @@ test('真实读取错误不能作为缺少标注文件忽略', async () => {
   } finally { env.restore(); }
 });
 
+test('简化工具后旧斜坡自动转方块且高度不变, 数字 2 作废和数字 3 擦除仍可撤销', async () => {
+  const frame = migrateParam({ version: 2, frames: [{ id: 'a', src: 'frames/a.png', tile: 10, tileY: 10, x: 0, y: 0 }] }).frames[0];
+  const cols = [{ c: 0, y: 30, t: 'slopeL' }, { c: 1, y: 50, t: 'slopeR' }, { c: 2, y: 70, t: 'tree' }];
+  const store = { names: ['a.png'], param: migrateParam({ version: 2, frames: [frame] }), marks: { version: 1, tile: 10, x0: 0, marker: 1, frames: [frame], cols } };
+  const env = environment(await readFile(new URL('../web/mark.html', import.meta.url), 'utf8'), store);
+  try {
+    await import('../web/mark.js?ui-mark-simple-tools'); const bridge = globalThis.editorBridge; await bridge.flush();
+    assert.deepEqual(env.ids.get('tools').children.map(button => button.dataset.tool), ['block', 'tree', 'erase']);
+    assert.deepEqual(store.marks.cols, [{ ...cols[0], t: 'block' }, { ...cols[1], t: 'block' }, cols[2]]);
+    const d = bridge.diagnostics(), overlay = env.elements.filter(e => e.tagName === 'CANVAS').at(-1);
+    const point = { clientX: d.panX + 45 * d.zoom, clientY: d.panY + 65 * d.zoom };
+    const key = async value => { for (const fn of env.events.get('keydown') || []) await fn({ key: value, target: overlay, preventDefault() {} }); };
+    await key('2'); await overlay.fire('pointerdown', point); await overlay.fire('pointerup', point); await bridge.flush(); assert.equal(store.marks.cols.find(m => m.c === 4).t, 'tree');
+    await key('3'); await overlay.fire('pointerdown', point); await overlay.fire('pointerup', point); await bridge.flush(); assert.equal(store.marks.cols.some(m => m.c === 4), false);
+    await env.ids.get('undo').click(); await bridge.flush(); assert.equal(store.marks.cols.find(m => m.c === 4).t, 'tree');
+  } finally { env.restore(); }
+});
+
 test('标注页面恢复旧进度, 擦除可撤销, 清空也会自动保存', async () => {
   const frame = { id: 'a', src: 'frames/a.png', x: 100, y: 200, tile: 20, tileY: 30, phaseX: 3, phaseY: 7, on: true };
   const store = { names: ['a.png'], param: { version: 1, frames: [frame] }, marks: { version: 1, tile: 20, x0: 103, marker: 10, frames: [frame], cols: [{ c: 4, y: 267, t: 'block' }] } };
@@ -367,7 +385,7 @@ test('标注页面恢复旧进度, 擦除可撤销, 清空也会自动保存', a
     const marker = get('marker'); await marker.fire('focus'); marker.value = '25'; await marker.fire('change'); await globalThis.editorBridge.flush(); assert.equal(store.marks.marker, 25);
     await get('undo').click(); await globalThis.editorBridge.flush(); assert.equal(store.marks.marker, 10);
     const overlay = env.elements.filter(e => e.tagName === 'CANVAS').at(-1);
-    await env.ids.get('tools').children[4].click();
+    await env.ids.get('tools').children.find(button => button.dataset.tool === 'erase').click();
     // 适应窗口后, 原标记的世界位置为 (183, 267), 屏幕位置按缩放换算.
     const zoom = Math.min((1000 - 64) / 1800, (700 - 64) / 1000);
     const panX = (1000 - (100 + 1900) * zoom) / 2, panY = (700 - (200 + 1200) * zoom) / 2;

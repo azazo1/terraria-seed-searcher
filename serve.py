@@ -96,7 +96,7 @@ def build_observed(mark):
     out = DATA / "observed.txt"
     out.write_text(" ".join(vals) + "\n", encoding="utf-8")
 
-    # 形态表: 列号 -> block/slopeL/slopeR/tree, 精算阶段用
+    # 形态表用于检查标注类型. 当前粗筛只读取高度, 不读取斜坡方向.
     shapes = {str(int(c["c"])): c.get("t", "block") for c in mark.get("cols", [])}
     write_json(DATA / "shapes.json", {"tile": tile, "base": base, "shapes": shapes})
 
