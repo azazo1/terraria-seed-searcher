@@ -13,3 +13,16 @@ sweep2_small
 
 # 本机特定
 known_hosts
+
+# 本地素材与编辑进度
+frames/
+workdir/
+data/param.json
+data/marks.json
+data/observed.txt
+data/observed_meta.json
+data/shapes.json
+data/candidates.txt
+data/_old/
+__pycache__/
+*.pyc

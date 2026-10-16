@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>泰拉瑞亚种子搜索</title><link rel="stylesheet" href="/web/ui.css"></head>
+<body class="app">
+<aside class="app-nav">
+  <div class="brand"><span class="brand-icon">T</span><div><strong>种子搜索</strong><small>从截图还原地形</small></div></div>
+  <nav id="tabs" role="tablist" aria-label="工作步骤" aria-orientation="vertical">
+    <button id="tab-import" role="tab" data-tab="import" aria-controls="pane-import" aria-selected="true"><span class="nav-number">1</span><span>导入截图<small id="nav-import">从这里开始</small></span></button>
+    <button id="tab-calib" role="tab" data-tab="calib" aria-controls="pane-calib" aria-selected="false" tabindex="-1"><span class="nav-number">2</span><span>对齐与校准<small id="nav-calib">等待截图</small></span></button>
+    <button id="tab-mark" role="tab" data-tab="mark" aria-controls="pane-mark" aria-selected="false" tabindex="-1"><span class="nav-number">3</span><span>标注地表<small id="nav-mark">等待对齐</small></span></button>
+    <button id="tab-search" role="tab" data-tab="search" aria-controls="pane-search" aria-selected="false" tabindex="-1"><span class="nav-number">4</span><span>粗筛搜索<small id="nav-search">等待标注</small></span></button>
+    <button id="tab-candidates" role="tab" data-tab="candidates" aria-controls="pane-candidates" aria-selected="false" tabindex="-1"><span class="nav-number">5</span><span>查看候选<small id="nav-candidates">等待搜索</small></span></button>
+  </nav>
+  <div class="nav-footer"><span class="badge">自动保存</span><p>按顺序工作, 修改会自动传到下一步. 可随时切换回来继续编辑.</p><span id="connection">正在连接...</span></div>
+</aside>
+<main class="app-main">
+  <header class="app-header"><div><h1 id="page-title">导入主播截图</h1><p id="page-hint">导入原始截图, 然后进入对齐步骤.</p></div><button id="refresh">刷新状态</button></header>
+  <div id="app-notice" class="app-notice" role="status" aria-live="polite" hidden></div>
+  <div class="app-workspace">
+    <section id="pane-import" role="tabpanel" aria-labelledby="tab-import" class="app-pane scroll-pane">
+      <div class="content-stack">
+        <div class="panel stack"><div class="section-title"><h2>截图素材</h2><span id="frame-count" class="badge">0 张</span></div>
+          <input type="file" id="file" multiple accept="image/png,image/jpeg,image/webp,image/gif,image/bmp" hidden>
+          <div id="dropzone" class="dropzone" role="button" tabindex="0" aria-label="选择图片或拖入截图"><button id="pick" class="primary">导入图片</button><p class="hint">把图片拖到这里, 或按 Ctrl/⌘+V 粘贴截图</p><p class="hint">支持 PNG, JPG, WebP, GIF 和 BMP. 可一次导入多张.</p></div>
+          <p id="upload-status" class="hint" role="status"></p><div id="frames" class="frames"></div><p id="frames-hint" class="hint">正在读取截图...</p>
+        </div>
+        <div class="panel stack"><h2>接下来做什么</h2><p class="hint">在对齐步骤中移动截图, 设置方块格宽和相位. 图片可以锁定, 防止对齐后误拖. 所有参数自动保存.</p><div class="actions"><button id="go-calib" class="primary" disabled>开始对齐 →</button></div></div>
+      </div>
+    </section>
+    <section id="pane-calib" role="tabpanel" aria-labelledby="tab-calib" class="app-pane editor-pane" hidden></section>
+    <section id="pane-mark" role="tabpanel" aria-labelledby="tab-mark" class="app-pane editor-pane" hidden></section>
+    <section id="pane-search" role="tabpanel" aria-labelledby="tab-search" class="app-pane scroll-pane" hidden>
+      <div class="content-stack"><div class="panel stack"><h2>搜索准备</h2><p class="hint">使用上一步自动生成的观测. 开始前会检查有效列和搜索器.</p><dl id="search-info" class="kv"></dl><p id="diagnostic" class="hint"></p></div>
+        <div class="panel stack"><h2>粗筛设置</h2><div class="fields"><label class="field">容差<input type="number" id="tol" value="0.5" step="0.05" min="0.01" max="10"></label><label class="field">最低得分<input type="number" id="offer" value="0.55" step="0.01" min="0" max="1"></label></div><p class="hint">默认按 1.00 倍格宽搜索. 调低最低得分会保留更多候选.</p><div class="actions"><button id="start" class="primary" disabled>开始搜索</button><button id="stop" disabled>停止搜索</button><button id="go-candidates">查看候选 →</button></div></div>
+        <div class="panel stack"><h2>运行输出</h2><pre id="log">搜索尚未启动.</pre></div>
+      </div>
+    </section>
+    <section id="pane-candidates" role="tabpanel" aria-labelledby="tab-candidates" class="app-pane scroll-pane" hidden><div class="content-stack"><div class="panel stack"><div class="section-title"><h2>候选结果</h2><button id="refresh-candidates">刷新候选</button></div><p id="candidate-hint" class="hint">搜索结束后, 候选会列在这里.</p><div class="table-wrap"><table><thead><tr><th>排名</th><th>候选记录</th></tr></thead><tbody id="candidates"></tbody></table></div></div></div></section>
+  </div>
+</main>
+<script type="module" src="/web/app.js"></script>
+</body></html>
