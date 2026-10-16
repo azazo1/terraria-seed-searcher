@@ -10,6 +10,7 @@
 <main class="editor-body">
   <aside class="sidebar">
     <div id="notice" class="notice" role="status" aria-live="polite"></div>
+    <section id="grid-warning" class="notice warn" role="status" aria-live="polite" hidden><h2>图片网格尺寸差距过大</h2><p id="grid-warning-detail"></p><a class="button" href="/web/calib.html">返回图片拼接调整大小</a><p class="hint">此警示不阻止标注, 不会自动修改图片或标记.</p></section>
     <section><h2>地表形态</h2><p class="hint">点击或按住拖动来标注. 标记吸附鼠标所在方块的中心, 高亮范围为当前图片的 1 x 1 格, 一次拖动可以整体撤销. 搜索高度仍取方块上边缘.</p><div id="tools" class="tools"></div></section>
     <section><h2>标注进度</h2><div class="fields"><div class="metric"><strong id="total">0</strong><span>已标列</span></div><div class="metric"><strong id="valid">0</strong><span>有效列</span></div></div><p id="stat" class="hint"></p><p id="diagnostic" class="hint">保存后显示台阶率.</p></section>
     <section><h2>出生点</h2><label class="field">观测中的列号<input type="number" id="marker" min="0" step="1" value="141"></label><button id="pick-marker" aria-pressed="false">在图上指定出生点</button><p class="hint">白色竖线表示出生点. 点击按钮后, 在图片中点击对应位置.</p></section>

@@ -322,6 +322,26 @@ test('标注继承单图缩放, 保存原像素锚点并在再次缩放后跟随
   } finally { env.restore(); }
 });
 
+test('标注页网格大差距仅警示, 小差距和缩放一致时不提示且仍可保存', async () => {
+  const cases = [{ scale: 1, on: true, warning: true }, { scale: .5, on: true, warning: false }, { scale: .52, on: true, warning: false }, { scale: 1, on: false, warning: false }];
+  const html = await readFile(new URL('../web/mark.html', import.meta.url), 'utf8');
+  for (const [index, item] of cases.entries()) {
+    const store = { names: ['a.png', 'b.png'], param: migrateParam({ version: 2, frames: [{ id: 'a', src: 'frames/a.png', tile: 10, tileY: 10, x: 0, y: 0 }, { id: 'b', src: 'frames/b.png', tile: 20, tileY: 20, x: 3000, scale: item.scale, on: item.on }] }) };
+    const env = environment(html, store);
+    try {
+      await import(`../web/mark.js?ui-mark-warning-${index}`);
+      const bridge = globalThis.editorBridge; await bridge.flush();
+      assert.equal(env.ids.get('grid-warning').hidden, !item.warning); assert.equal(bridge.diagnostics().ready, true);
+      if (item.warning) {
+        const d = bridge.diagnostics(), overlay = env.elements.filter(e => e.tagName === 'CANVAS').at(-1);
+        const point = { clientX: d.panX + 25 * d.zoom, clientY: d.panY + 45 * d.zoom };
+        await overlay.fire('pointerdown', point); await overlay.fire('pointerup', point); await bridge.flush();
+        assert.equal(store.marks.cols[0].c, 2); assert.equal(store.marks.cols[0].y, 40); assert.equal(env.ids.get('grid-warning').hidden, false);
+      }
+    } finally { env.restore(); }
+  }
+});
+
 test('真实读取错误不能作为缺少标注文件忽略', async () => {
   const store = { names: ['a.png'], param: { version: 2, frames: [{ id: 'a', src: 'frames/a.png', tile: 10 }] }, readFailure: { url: '/data/marks.json', status: 503, error: 'storage error 404' } };
   const env = environment(await readFile(new URL('../web/mark.html', import.meta.url), 'utf8'), store);

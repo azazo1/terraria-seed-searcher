@@ -18,3 +18,12 @@ export function findFrame(frames, point) {
     return point.x >= frame.x && point.x < frame.x + width && point.y >= frame.y && point.y < frame.y + height;
   });
 }
+export const GRID_GAP_LIMIT = .05;
+export function gridGap(frames, limit = GRID_GAP_LIMIT) {
+  const visible = frames.filter(frame => frame.on !== false && !frame.failed);
+  if (visible.length < 2) return null;
+  const grids = visible.map(frame => ({ id: frame.id, ...frameGrid(frame) }));
+  const widthGap = Math.max(...grids.map(g => g.width)) / Math.min(...grids.map(g => g.width)) - 1;
+  const heightGap = Math.max(...grids.map(g => g.height)) / Math.min(...grids.map(g => g.height)) - 1;
+  return Math.max(widthGap, heightGap) > limit + 1e-9 ? { limit, widthGap, heightGap, grids } : null;
+}

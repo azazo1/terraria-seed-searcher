@@ -1,7 +1,7 @@
 /* 逐列标注, 吸附预览与自动保存. */
 import { $, Autosave, History, Viewport, bindPan, bindViewButtons, boundsOf, drawFrame, editing, installLeaveGuard, loadFrames, notify, request, serializeFrames, setSaveState } from './editor-core.js';
 import { inheritObservation, MARKS_VERSION, snapPoint } from './observation.js';
-import { canvasPoint, imagePoint } from './frame-geometry.js';
+import { canvasPoint, gridGap, imagePoint } from './frame-geometry.js';
 const TOOLS = [
   { id: 'block', name: '完整方块', color: '#86e4ad', glyph: '■' },
   { id: 'slopeL', name: '斜坡 左高右低', color: '#ffd185', glyph: '◣' },
@@ -130,6 +130,10 @@ $('marker').onchange = e => {
   $('marker').value = marker; inputBefore = null;
 };
 $('clear').onclick = () => { if (marks.size && confirm('清空全部标记? 可以通过撤销恢复.')) { history.push(snapshot()); marks.clear(); changed(); } };
+function showGridWarning() {
+  const gap = gridGap(frames); $('grid-warning').hidden = !gap;
+  $('grid-warning-detail').textContent = gap ? `格宽最大差距 ${(gap.widthGap * 100).toFixed(1)}%, 格高最大差距 ${(gap.heightGap * 100).toFixed(1)}%, 警示阈值 ${(gap.limit * 100).toFixed(0)}%. ` + gap.grids.map(g => `${g.id}: ${g.width.toFixed(3)} x ${g.height.toFixed(3)} px/格`).join('; ') + '. 尺寸不一致可能导致标注错列或高度失真.' : '';
+}
 function showDiagnostic(meta) {
   if (!meta) { $('diagnostic').textContent = '尚无有效观测. 标注地表后会自动生成.'; $('diagnostic').className = 'hint'; return; }
   const rate = meta.step_rate;
@@ -162,7 +166,7 @@ try {
   const result = await loadFrames();
   if (!result.calibrated) { $('empty').hidden = false; setSaveState(false, '等待对齐'); resolveReady(); }
   else {
-    frames = result.frames.filter(f => f.on && !f.failed);
+    frames = result.frames.filter(f => f.on && !f.failed); showGridWarning();
     let stored = null;
     try { stored = await request('/data/marks.json'); } catch (e) { if (e.status !== 404) throw e; }
     const inherited = inheritObservation(stored, frames);

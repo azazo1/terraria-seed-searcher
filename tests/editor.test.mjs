@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Autosave, History, Viewport, boundsOf, drawFrame, gridStart, imageURL, normalizeFrame } from '../web/editor-core.js';
 import { inheritObservation, snapPoint } from '../web/observation.js';
-import { canvasPoint, findFrame, frameGrid, frameSize, imagePoint } from '../web/frame-geometry.js';
+import { canvasPoint, findFrame, frameGrid, frameSize, gridGap, imagePoint } from '../web/frame-geometry.js';
 import { applyMeasurement, guideFor, measureGrid, nearestGridLine, selectedGridPair } from '../web/grid-model.js';
 import { migrateParam, PARAM_VERSION } from '../web/frame-schema.js';
 
@@ -135,6 +135,17 @@ test('单图缩放统一图片范围, 网格相位, 命中和像素转换', () =
   assert.deepEqual(calls.find(c => c[0] === 'drawImage').slice(2), [50, 50, 100, 100, 200, 300, 200, 200]);
   assert.equal(migrateParam({ version: 2, frames: [frame] }).frames[0].scale, 1);
   assert.equal(migrateParam({ version: PARAM_VERSION, frames: [scaled] }).frames[0].scale, 2);
+});
+
+test('仅在缩放后的格宽或格高差距超过阈值时警示, 隐藏和失败图片不参与', () => {
+  const a = { ...frame, tile: 20, tileY: 30 }, b = { ...frame, id: 'b', tile: 10, tileY: 15, scale: 2 };
+  assert.equal(gridGap([a]), null); assert.equal(gridGap([a, b]), null);
+  assert.equal(gridGap([a, { ...b, scale: 2.1 }]), null);
+  assert.ok(gridGap([a, { ...b, scale: 2.102 }]));
+  const heightOnly = gridGap([a, { ...b, tileY: 16 }]); assert.equal(heightOnly.widthGap, 0); assert.ok(heightOnly.heightGap > .05);
+  assert.equal(gridGap([a, { ...b, scale: 4, on: false }]), null);
+  assert.equal(gridGap([a, { ...b, scale: 4, failed: true }]), null);
+  assert.ok(gridGap([{ ...a, tile: 20 }, { ...a, tile: 20.8 }, { ...a, tile: 21.6 }]));
 });
 
 test('缩放后标注与出生点跟随原图片像素, 原有高度不会留在旧尺寸上', () => {
