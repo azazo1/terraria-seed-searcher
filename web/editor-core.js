@@ -143,26 +143,35 @@ export function bindViewButtons(view, frames) {
   $('zoom-out').onclick = () => view.scaleAt(view.zoom / 1.25);
   $('actual').onclick = () => view.scaleAt(1);
 }
-export function bindPan(view, onDown, onMove, onUp, { rightSelect = false } = {}) {
+export function bindPan(view, onDown, onMove, onUp, { rightSelect = false, ctrlMouseFallback = false } = {}) {
   let drag = null, space = false;
   addEventListener('keydown', e => { if (e.code === 'Space' && !editing(e.target)) { space = true; e.preventDefault(); } });
   addEventListener('keyup', e => { if (e.code === 'Space') space = false; });
-  const end = e => { if (!drag || (e.pointerId !== undefined && e.pointerId !== drag.pointerId)) return; const old = drag; drag = null; view.overlay.style.cursor = ''; if (old.kind !== 'pan') onUp?.(old, e); };
+  const end = e => { if (!drag || (drag.source !== 'mouse' && e.pointerId !== undefined && e.pointerId !== drag.pointerId)) return; const old = drag; drag = null; view.overlay.style.cursor = ''; if (old.kind !== 'pan') onUp?.(old, e); };
   addEventListener('blur', () => { space = false; end({}); });
-  view.overlay.addEventListener('pointerdown', e => {
+  const begin = (e, source) => {
     if (drag) return;
     const screen = view.screen(e), point = view.world(screen);
     const pan = e.button === 1 || space || (e.button === 2 && !rightSelect);
     const mode = pan ? { kind: 'pan', screen, x: view.panX, y: view.panY } : onDown(point, e);
     if (!mode) return;
-    e.preventDefault(); view.overlay.focus({ preventScroll: true }); view.overlay.setPointerCapture(e.pointerId);
-    drag = { ...mode, pointerId: e.pointerId }; view.overlay.style.cursor = mode.kind === 'pan' ? 'grabbing' : 'crosshair';
-  });
-  view.overlay.addEventListener('pointermove', e => {
+    e.preventDefault(); view.overlay.focus({ preventScroll: true });
+    if (source === 'pointer') view.overlay.setPointerCapture(e.pointerId);
+    drag = { ...mode, source, pointerId: e.pointerId }; view.overlay.style.cursor = mode.kind === 'pan' ? 'grabbing' : 'crosshair';
+  };
+  const move = e => {
     const screen = view.screen(e), point = view.world(screen);
     if (drag?.kind === 'pan') { view.panX = drag.x + screen.x - drag.screen.x; view.panY = drag.y + screen.y - drag.screen.y; view.invalidate(); }
     else onMove?.(point, drag, e);
-  });
+  };
+  view.overlay.addEventListener('pointerdown', e => begin(e, 'pointer'));
+  view.overlay.addEventListener('pointermove', e => { if (drag?.source !== 'mouse') move(e); });
+  if (ctrlMouseFallback) {
+    // macOS Firefox 的 Ctrl + 左键可能只有 mousedown, 不产生 pointerdown.
+    view.overlay.addEventListener('mousedown', e => { if (e.ctrlKey && (e.button === 0 || e.button === 2)) begin(e, 'mouse'); });
+    addEventListener('mousemove', e => { if (drag?.source === 'mouse') move(e); });
+    addEventListener('mouseup', e => { if (drag?.source === 'mouse') end(e); });
+  }
   for (const name of ['pointerup', 'pointercancel', 'lostpointercapture']) view.overlay.addEventListener(name, end);
   view.overlay.addEventListener('pointerleave', e => { if (!drag) onMove?.(null, null, e); });
 }

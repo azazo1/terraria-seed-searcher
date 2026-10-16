@@ -213,6 +213,44 @@ test('拖动中按下和松开 Ctrl 即时切换相位模式, 两端不跳动且
   } finally { env.restore(); }
 });
 
+test('macOS Firefox 只有 Ctrl mousedown 时仍能平移, 鼠标与指针事件不重复启动', async () => {
+  const frame = { id: 'a', src: 'frames/a.png', x: 0, y: 0, tile: 20, tileY: 20, phaseX: 0, phaseY: 0, on: true, gridGuides: { x: { fixed: 100, moving: 1100, cells: 50 } } };
+  const store = { names: ['a.png'], param: { version: 2, frames: [frame] } };
+  const env = environment(await readFile(new URL('../web/grid.html', import.meta.url), 'utf8'), store);
+  try {
+    await import('../web/grid.js?ui-grid-firefox-ctrl');
+    const overlay = env.elements.filter(e => e.tagName === 'CANVAS').at(-1), bridge = globalThis.editorBridge;
+    const point = x => { const d = bridge.diagnostics(); return { clientX: d.panX + x * d.zoom, clientY: d.panY + 500 * d.zoom }; };
+    const mouseWindow = async (type, x, extra = {}) => {
+      const e = { type, ...point(x), button: 2, buttons: type === 'mouseup' ? 0 : 1, ctrlKey: true, preventDefault() {}, ...extra };
+      for (const fn of env.events.get(type) || []) await fn(e);
+    };
+    const near = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-8, `${actual} != ${expected}`);
+    let captures = 0; overlay.setPointerCapture = () => captures++;
+    await overlay.fire('mousedown', { ...point(100), pointerId: undefined, ctrlKey: true, button: 2, buttons: 1 });
+    assert.equal(bridge.diagnostics().dragMode, 'phase'); assert.equal(captures, 0);
+    await mouseWindow('mousemove', 130); near(bridge.diagnostics().guide.fixed, 130); near(bridge.diagnostics().guide.moving, 1130);
+    await assert.rejects(bridge.flush());
+    await mouseWindow('mouseup', 140); await bridge.flush();
+    near(store.param.frames[0].tile, 20); near(store.param.frames[0].gridGuides.x.fixed, 140); near(store.param.frames[0].gridGuides.x.moving, 1140);
+    await env.ids.get('undo').click(); await bridge.flush(); near(store.param.frames[0].gridGuides.x.fixed, 100);
+    await overlay.fire('pointerdown', { ...point(100), ctrlKey: true });
+    await overlay.fire('mousedown', { ...point(1100), pointerId: undefined, ctrlKey: true, button: 2, buttons: 1 });
+    await overlay.fire('pointermove', { ...point(120), ctrlKey: true }); await overlay.fire('pointerup', { ...point(120), ctrlKey: true });
+    await mouseWindow('mouseup', 120); await bridge.flush();
+    near(store.param.frames[0].gridGuides.x.fixed, 120); near(store.param.frames[0].gridGuides.x.moving, 1120);
+    await env.ids.get('undo').click(); await bridge.flush(); near(store.param.frames[0].gridGuides.x.fixed, 100);
+    await overlay.fire('mousedown', { ...point(1100), pointerId: undefined, ctrlKey: true, button: 2, buttons: 1 });
+    await mouseWindow('mousemove', 1120);
+    await overlay.fire('pointerup', { ...point(1120), ctrlKey: true, button: 2, buttons: 0 }); await mouseWindow('mouseup', 1120); await bridge.flush();
+    near(store.param.frames[0].gridGuides.x.fixed, 120); near(store.param.frames[0].gridGuides.x.moving, 1120);
+    await overlay.fire('mousedown', { ...point(120), pointerId: undefined, ctrlKey: true, button: 2, buttons: 1 });
+    await mouseWindow('mousemove', 140);
+    for (const fn of env.events.get('blur') || []) await fn({ type: 'blur' });
+    await mouseWindow('mouseup', 140); await bridge.flush(); near(store.param.frames[0].gridGuides.x.fixed, 120);
+  } finally { env.restore(); }
+});
+
 test('标注页面恢复旧进度, 擦除可撤销, 清空也会自动保存', async () => {
   const frame = { id: 'a', src: 'frames/a.png', x: 100, y: 200, tile: 20, tileY: 30, phaseX: 3, phaseY: 7, on: true };
   const store = { names: ['a.png'], param: { version: 1, frames: [frame] }, marks: { version: 1, tile: 20, x0: 103, marker: 10, frames: [frame], cols: [{ c: 4, y: 267, t: 'block' }] } };

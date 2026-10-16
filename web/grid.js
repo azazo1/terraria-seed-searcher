@@ -245,13 +245,13 @@ bindPan(view, (point, e) => {
   moveDrag(drag.tx, point, event);
 }, (drag, event) => {
   const tx = drag.tx; if (tx.cancelled) return;
-  if (event.type !== 'pointerup') { cancelDrag(); return; }
+  if (event.type !== 'pointerup' && event.type !== 'mouseup') { cancelDrag(); return; }
   const finalPoint = view.world(view.screen(event));
   moveDrag(tx, finalPoint, event);
   transaction = null;
   if (JSON.stringify(tx.before) !== fingerprint()) history.push(tx.before);
   renderList(); sync(); changed();
-}, { rightSelect: true });
+}, { rightSelect: true, ctrlMouseFallback: true });
 async function save() {
   if (!ready || !frames.length) return false;
   const state = snapshot(), key = JSON.stringify(state); $('save').disabled = true;
