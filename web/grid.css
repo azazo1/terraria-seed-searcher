@@ -1,0 +1,10 @@
+/* 双线测量的固定线与活动线使用不同颜色. */
+.guide-card { display:grid; gap:8px; padding:10px; border:1px solid var(--line); border-left:3px solid; border-radius:7px; background:#131f2a; }
+.guide-card strong { font-size:12px; }
+.guide-card.fixed { border-left-color:#72dfbe; }
+.guide-card.moving { border-left-color:#ffd185; }
+.guide-card.fixed strong { color:#72dfbe; }
+.guide-card.moving strong { color:#ffd185; }
+.guide-card .measure { font-size:11px; }
+#spacing { font-size:22px; font-variant-numeric:tabular-nums; }
+#line-step { width:auto; }

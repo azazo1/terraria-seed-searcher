@@ -13,12 +13,12 @@ function environment(html, store) {
     setAttribute(k, v) { this.attributes[k] = String(v); if (k.startsWith('data-')) this.dataset[k.slice(5).replace(/-([a-z])/g, (_m, c) => c.toUpperCase())] = String(v); }
     getAttribute(k) { return this.attributes[k]; }
     removeAttribute(k) { delete this.attributes[k]; }
-    append(...nodes) { for (const node of nodes) { node.parentNode = this; this.children.push(node); if (node.tagName === 'IFRAME') { const key = node.src.includes('calib') ? 'calib' : 'mark'; node.contentWindow = { editorBridge: store.editorFactory?.(key) || { flush: async () => {} } }; queueMicrotask(() => node.onload?.()); } } }
+    append(...nodes) { for (const node of nodes) { node.parentNode = this; this.children.push(node); if (node.tagName === 'IFRAME') { const key = node.src.includes('grid') ? 'grid' : node.src.includes('calib') ? 'calib' : 'mark'; node.contentWindow = { editorBridge: store.editorFactory?.(key) || { flush: async () => {} } }; queueMicrotask(() => node.onload?.()); } } }
     prepend(...nodes) { for (const node of nodes) node.parentNode = this; this.children.unshift(...nodes); }
     replaceChildren(...nodes) { for (const node of this.children) node.parentNode = null; this.children = []; this.append(...nodes); }
     remove() { if (this.parentNode) this.parentNode.children = this.parentNode.children.filter(n => n !== this); this.parentNode = null; }
     addEventListener(type, fn) { if (!this.handlers.has(type)) this.handlers.set(type, []); this.handlers.get(type).push(fn); }
-    async fire(type, more = {}) { const e = { target: this, currentTarget: this, button: 0, pointerId: 1, clientX: 250, clientY: 250, preventDefault() {}, stopPropagation() {}, ...more }; if (this['on' + type]) await this['on' + type](e); for (const fn of this.handlers.get(type) || []) await fn(e); }
+    async fire(type, more = {}) { const e = { type, target: this, currentTarget: this, button: 0, pointerId: 1, clientX: 250, clientY: 250, preventDefault() {}, stopPropagation() {}, ...more }; if (this['on' + type]) await this['on' + type](e); for (const fn of this.handlers.get(type) || []) await fn(e); }
     click() { if (!this.disabled) return this.fire('click'); }
     focus() { doc.activeElement = this; }
     checkValidity() { const n = this.valueAsNumber; return Number.isFinite(n) && (this.min === undefined || n >= Number(this.min)) && (this.max === undefined || n <= Number(this.max)); }
@@ -46,6 +46,7 @@ function environment(html, store) {
     return [];
   } };
   ids.get('nudge-step') && (ids.get('nudge-step').value = '1');
+  ids.get('line-step') && (ids.get('line-step').value = '0.1');
   class Image { constructor() { this.naturalWidth = 1800; this.naturalHeight = 1000; } set src(v) { this.url = v; queueMicrotask(() => this.onload?.()); } }
   const post = [];
   const fetch = async (url, options = {}) => {
@@ -65,8 +66,9 @@ function environment(html, store) {
   return { ids, elements, post, doc, raf, events, restore() { for (const [key, value] of before) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; } delete globalThis.editorBridge; } };
 }
 
-test('对齐页面异步加载后生成图层和参数, 锁定阻止拖动, 自动保存继承数值', async () => {
-  const store = { names: ['测试 50%.png'], param: null };
+test('拼接页面继承网格, 锁定阻止拖动, 重排与撤销不重置标定', async () => {
+  const calibrated = { id: 'a', src: 'frames/测试 50%.png', tile: 21.25, tileY: 21.25, x: 0, y: 0, phaseX: 3, phaseY: 7, gridCalibrated: true, gridGuides: { x: { fixed: 109.25, moving: 1171.75, cells: 50 } } };
+  const store = { names: ['测试 50%.png'], param: { version: 2, frames: [calibrated] } };
   const env = environment(await readFile(new URL('../web/calib.html', import.meta.url), 'utf8'), store);
   try {
     await import('../web/calib.js?ui-calib');
@@ -83,12 +85,131 @@ test('对齐页面异步加载后生成图层和参数, 锁定阻止拖动, 自�
     await overlay.fire('pointermove', { clientX: 600, clientY: 350 }); await overlay.fire('pointerup');
     await globalThis.editorBridge.flush(); assert.equal(store.param.frames[0].x, 123.4);
     get('locked').checked = false; await get('locked').fire('change');
-    const tile = get('tile'); env.doc.activeElement = tile; await tile.fire('focus'); tile.value = '21.25'; await tile.fire('input'); await tile.fire('change'); env.doc.activeElement = env.doc.body;
-    await globalThis.editorBridge.flush(); assert.equal(store.param.frames[0].tile, 21.25); assert.equal(store.param.frames[0].tileY, 21.25);
-    await get('undo').click(); await globalThis.editorBridge.flush(); assert.equal(store.param.frames[0].tile, 20.86);
-    await get('redo').click(); await globalThis.editorBridge.flush(); assert.equal(store.param.frames[0].tile, 21.25);
+    await get('undo').click(); await globalThis.editorBridge.flush(); assert.equal(store.param.frames[0].locked, true);
+    await get('redo').click(); await globalThis.editorBridge.flush(); assert.equal(store.param.frames[0].locked, false);
+    await get('reset').click(); await globalThis.editorBridge.flush();
+    assert.equal(store.param.frames[0].tile, 21.25); assert.equal(store.param.frames[0].phaseX, 3);
+    assert.deepEqual(store.param.frames[0].gridGuides, calibrated.gridGuides); assert.equal(get('tile'), undefined);
     while (env.raf.length) env.raf.shift()();
     assert.ok(globalThis.editorBridge.diagnostics().paints >= 1);
+  } finally { env.restore(); }
+});
+
+test('左右键拖选松开才确认, 两端互相固定, 可换线并取消未确认拖动', async () => {
+  const frame = { id: 'a', src: 'frames/a.png', x: 700, y: 90, tile: 20, tileY: 20, phaseX: 0, phaseY: 0, on: true };
+  const store = { names: ['a.png'], param: { version: 1, frames: [frame] } };
+  const env = environment(await readFile(new URL('../web/grid.html', import.meta.url), 'utf8'), store);
+  try {
+    await import('../web/grid.js?ui-grid');
+    const get = id => env.ids.get(id), overlay = env.elements.filter(e => e.tagName === 'CANVAS').at(-1);
+    const bridge = globalThis.editorBridge, diagnostics = () => bridge.diagnostics();
+    const point = (x, y = 500) => { const d = diagnostics(); return { clientX: d.panX + x * d.zoom, clientY: d.panY + y * d.zoom }; };
+    const drag = async (from, to, button = 0) => { await overlay.fire('pointerdown', { ...point(from), button }); await overlay.fire('pointermove', point(to)); await overlay.fire('pointerup', { ...point(to), button }); };
+    const escape = async () => { for (const fn of env.events.get('keydown') || []) await fn({ key: 'Escape', target: overlay, preventDefault() {} }); };
+    const near = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-8, `${actual} != ${expected}`);
+    assert.equal(diagnostics().guide, null);
+    await bridge.flush(); const posts = env.post.length;
+    await overlay.fire('pointerdown', { ...point(100) }); await overlay.fire('pointermove', point(110));
+    near(diagnostics().guide.fixed, 110); assert.equal(diagnostics().selecting, true);
+    await assert.rejects(bridge.flush());
+    await new Promise(resolve => setTimeout(resolve, 730)); assert.equal(env.post.length, posts);
+    await overlay.fire('pointerup', point(110)); await bridge.flush();
+    assert.equal(diagnostics().selecting, false); near(store.param.frames[0].phaseX, 10);
+    await drag(1110, 1210, 2); await bridge.flush();
+    let saved = store.param.frames[0];
+    assert.equal(saved.gridGuides.x.cells, 50); near(saved.tile, 22); near(saved.gridGuides.x.fixed, 110); near(saved.gridGuides.x.moving, 1210);
+    await drag(110, 210); await bridge.flush();
+    saved = store.param.frames[0]; near(saved.tile, 20); near(saved.gridGuides.x.fixed, 210); near(saved.gridGuides.x.moving, 1210);
+    await get('undo').click(); await bridge.flush(); near(store.param.frames[0].tile, 22); near(store.param.frames[0].gridGuides.x.fixed, 110);
+    await get('redo').click(); await bridge.flush(); near(store.param.frames[0].tile, 20);
+    await drag(1210, 1310, 2); await bridge.flush();
+    saved = store.param.frames[0]; near(saved.tile, 22); near(saved.gridGuides.x.fixed, 210); near(saved.gridGuides.x.moving, 1310);
+    await drag(430, 450); await bridge.flush();
+    saved = store.param.frames[0]; near(saved.tile, 21.5); near(saved.gridGuides.x.fixed, 450); near(saved.gridGuides.x.moving, 1310); assert.equal(saved.gridGuides.x.cells, 40);
+    const confirmed = structuredClone(saved), confirmedGuide = structuredClone(diagnostics().guide);
+    await overlay.fire('pointerdown', { ...point(880), button: 2 }); await overlay.fire('pointermove', point(900));
+    await escape(); await overlay.fire('pointerup', { ...point(900), button: 2 }); await bridge.flush();
+    assert.deepEqual(store.param.frames[0], confirmed); assert.deepEqual(diagnostics().guide, confirmedGuide);
+    await overlay.fire('pointerdown', point(450)); await overlay.fire('pointermove', point(460)); await overlay.fire('pointercancel', point(460)); await bridge.flush();
+    assert.deepEqual(store.param.frames[0], confirmed);
+    await drag(450, 1400); await bridge.flush(); near(store.param.frames[0].gridGuides.x.moving, 1310); assert.ok(store.param.frames[0].gridGuides.x.fixed < 1310);
+    const zoom = diagnostics().zoom;
+    await get('focus-fixed').click(); assert.equal(diagnostics().zoom, zoom);
+    await get('axis-y').click(); get('square').checked = false; await get('reselect').click();
+    await overlay.fire('pointerdown', { ...point(300, 80) }); await overlay.fire('pointermove', point(300, 90)); await overlay.fire('pointerup', point(300, 90));
+    await overlay.fire('pointerdown', { ...point(300, 305), button: 2 }); await overlay.fire('pointermove', point(300, 390)); await overlay.fire('pointerup', { ...point(300, 390), button: 2 }); await bridge.flush();
+    near(store.param.frames[0].tileY, 30); near(store.param.frames[0].gridGuides.y.fixed, 90);
+    await overlay.fire('pointerdown', point(300, 90)); await overlay.fire('pointermove', point(300, 100)); await overlay.fire('pointerup', point(300, 100)); await bridge.flush();
+    saved = store.param.frames[0]; near(saved.tileY, 29); near(saved.gridGuides.y.moving, 390); near(saved.gridGuides.y.fixed, 100);
+    await get('reselect').click();
+    await overlay.fire('pointerdown', { ...point(300, 390), button: 2 }); await overlay.fire('pointermove', point(300, 400)); await overlay.fire('pointerup', { ...point(300, 400), button: 2 });
+    assert.equal(diagnostics().guide.fixed, undefined); near(diagnostics().guide.moving, 400);
+    await overlay.fire('pointerdown', { ...point(300, 110) }); await overlay.fire('pointermove', point(300, 120)); await overlay.fire('pointerup', point(300, 120)); await bridge.flush();
+    near(store.param.frames[0].gridGuides.y.fixed, 120); near(store.param.frames[0].gridGuides.y.moving, 400); near(store.param.frames[0].tileY, 28);
+    assert.equal(saved.x, 700); assert.equal(saved.y, 90);
+  } finally { env.restore(); }
+});
+
+test('修改间隔保持两端位置, Ctrl 拖动所选线只调整相位, 中键平移视图', async () => {
+  const frame = { id: 'a', src: 'frames/a.png', x: 700, y: 90, tile: 20, tileY: 20, phaseX: 0, phaseY: 0, on: true, gridGuides: { x: { fixed: 100, moving: 1100, cells: 50 }, y: { fixed: 80, moving: 280, cells: 10 } } };
+  const store = { names: ['a.png'], param: { version: 2, frames: [frame] } };
+  const env = environment(await readFile(new URL('../web/grid.html', import.meta.url), 'utf8'), store);
+  try {
+    await import('../web/grid.js?ui-grid-phase');
+    const get = id => env.ids.get(id), overlay = env.elements.filter(e => e.tagName === 'CANVAS').at(-1), bridge = globalThis.editorBridge;
+    const point = (x, y = 500) => { const d = bridge.diagnostics(); return { clientX: d.panX + x * d.zoom, clientY: d.panY + y * d.zoom }; };
+    const near = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-8, `${actual} != ${expected}`);
+    get('cells').value = '40'; await get('cells').fire('change'); await bridge.flush();
+    let f = store.param.frames[0]; near(f.tile, 25); near(f.tileY, 25); near(f.gridGuides.x.fixed, 100); near(f.gridGuides.x.moving, 1100); assert.equal(f.gridGuides.x.cells, 40);
+    await get('undo').click(); await bridge.flush(); near(store.param.frames[0].tile, 20);
+    await get('redo').click(); await bridge.flush(); near(store.param.frames[0].tile, 25);
+    const good = structuredClone(store.param);
+    for (const value of ['0', '1.5', '', '100001', '100000']) { get('cells').value = value; await get('cells').fire('change'); await bridge.flush(); assert.deepEqual(store.param, good); }
+    await overlay.fire('pointerdown', { ...point(100), ctrlKey: true }); await overlay.fire('pointermove', { ...point(113, 550), ctrlKey: true }); await assert.rejects(bridge.flush()); await overlay.fire('pointerup', { ...point(113, 550), ctrlKey: true }); await bridge.flush();
+    f = store.param.frames[0]; near(f.tile, 25); near(f.tileY, 25); near(f.phaseX, 13); near(f.phaseY, good.frames[0].phaseY); near(f.gridGuides.x.fixed, 113); near(f.gridGuides.x.moving, 1113); assert.equal(f.gridGuides.x.cells, 40);
+    await overlay.fire('pointerdown', { ...point(113), ctrlKey: true }); await overlay.fire('pointermove', { ...point(120), ctrlKey: true }); await overlay.fire('pointerup', { ...point(120), ctrlKey: true }); await bridge.flush();
+    f = store.param.frames[0]; near(f.gridGuides.x.fixed, 120); near(f.gridGuides.x.moving, 1120); near(f.phaseX, 20); near(f.tile, 25); assert.equal(f.gridGuides.x.cells, 40);
+    const confirmed = structuredClone(store.param);
+    await overlay.fire('pointerdown', { ...point(120), ctrlKey: true }); await overlay.fire('pointermove', point(130)); await overlay.fire('pointercancel', point(130)); await bridge.flush(); assert.deepEqual(store.param, confirmed);
+    const oldPan = bridge.diagnostics().panX;
+    await overlay.fire('pointerdown', { ...point(120), button: 1 }); const end = point(140); await overlay.fire('pointermove', end); await overlay.fire('pointerup', { ...end, button: 1 }); await bridge.flush();
+    assert.notEqual(bridge.diagnostics().panX, oldPan); assert.deepEqual(store.param, confirmed);
+    let prevented = false; await overlay.fire('contextmenu', { preventDefault() { prevented = true; } }); assert.equal(prevented, true);
+    await get('axis-y').click();
+    await overlay.fire('pointerdown', { ...point(300, 80), ctrlKey: true }); await overlay.fire('pointermove', { ...point(350, 90), ctrlKey: true }); await overlay.fire('pointerup', { ...point(350, 90), ctrlKey: true }); await bridge.flush();
+    f = store.param.frames[0]; near(f.gridGuides.y.fixed, 90); near(f.gridGuides.y.moving, 340); near(f.tileY, 25); near(f.gridGuides.x.fixed, 120); near(f.tile, 25);
+    await get('undo').click(); await bridge.flush(); assert.deepEqual(store.param, confirmed);
+    await get('redo').click(); await bridge.flush(); near(store.param.frames[0].gridGuides.y.fixed, 90);
+  } finally { env.restore(); }
+});
+
+test('拖动中按下和松开 Ctrl 即时切换相位模式, 两端不跳动且可整体撤销', async () => {
+  const frame = { id: 'a', src: 'frames/a.png', x: 0, y: 0, tile: 20, tileY: 20, phaseX: 0, phaseY: 0, on: true, locked: false, gridCalibrated: false, gridGuides: { x: { fixed: 100, moving: 1100, cells: 50 } } };
+  const store = { names: ['a.png'], param: { version: 2, frames: [frame] } };
+  const env = environment(await readFile(new URL('../web/grid.html', import.meta.url), 'utf8'), store);
+  try {
+    await import('../web/grid.js?ui-grid-modifier');
+    const overlay = env.elements.filter(e => e.tagName === 'CANVAS').at(-1), bridge = globalThis.editorBridge;
+    const point = x => { const d = bridge.diagnostics(); return { clientX: d.panX + x * d.zoom, clientY: d.panY + 500 * d.zoom }; };
+    const key = async (type, ctrlKey) => { for (const fn of env.events.get(type) || []) await fn({ key: 'Control', ctrlKey, target: overlay, preventDefault() {} }); };
+    const near = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-8, `${actual} != ${expected}`);
+    await bridge.flush(); const before = structuredClone(store.param);
+    await overlay.fire('pointerdown', point(100)); await overlay.fire('pointermove', { ...point(120), ctrlKey: false });
+    await key('keydown', true);
+    assert.equal(bridge.diagnostics().dragMode, 'phase');
+    await overlay.fire('pointermove', { ...point(140), ctrlKey: true });
+    near(bridge.diagnostics().guide.fixed, 140); near(bridge.diagnostics().guide.moving, 1120);
+    await key('keyup', false); assert.equal(bridge.diagnostics().dragMode, 'spacing');
+    await overlay.fire('pointermove', { ...point(150), ctrlKey: false }); await overlay.fire('pointerup', { ...point(150), ctrlKey: false }); await bridge.flush();
+    near(store.param.frames[0].tile, 19.4); near(store.param.frames[0].gridGuides.x.moving, 1120);
+    await env.ids.get('undo').click(); await bridge.flush(); assert.deepEqual(store.param, before);
+    await overlay.fire('pointerdown', { ...point(1100), button: 2, ctrlKey: true });
+    await overlay.fire('pointermove', { ...point(1120), button: 2, ctrlKey: true }); await overlay.fire('pointerup', { ...point(1120), button: 2, ctrlKey: true }); await bridge.flush();
+    near(store.param.frames[0].tile, 20); near(store.param.frames[0].gridGuides.x.fixed, 120); near(store.param.frames[0].gridGuides.x.moving, 1120);
+    await overlay.fire('pointerdown', point(120));
+    await overlay.fire('pointermove', { ...point(130), ctrlKey: true });
+    near(bridge.diagnostics().guide.fixed, 130); near(bridge.diagnostics().guide.moving, 1130);
+    await overlay.fire('pointercancel', point(130)); await bridge.flush(); near(store.param.frames[0].gridGuides.x.fixed, 120);
   } finally { env.restore(); }
 });
 
@@ -118,29 +239,36 @@ test('标注页面恢复旧进度, 擦除可撤销, 清空也会自动保存', a
   } finally { env.restore(); }
 });
 
-test('Tab 切换先保存当前编辑, 下游读取新参数, 失败时保留当前步骤', async () => {
+test('网格, 拼接和标注按顺序继承, 返回修改后不会被旧编辑器覆盖', async () => {
   const frame = { id: 'a', src: 'frames/a.png', x: 0, y: 0, tile: 20.86, tileY: 20.86, on: true };
-  let fail = false, pending = false, loadedX = null, calibCreated = 0, markCreated = 0;
+  let fail = false, pendingGrid = false, pendingCalib = false, nextTile = 22;
+  let loadedX = null, loadedTile = null, gridX = null, calibCreated = 0, markCreated = 0, gridCreated = 0;
   const store = { names: ['a.png'], param: { version: 1, frames: [frame] } };
   store.editorFactory = key => {
-    if (key === 'calib') calibCreated++;
+    if (key === 'grid') { gridCreated++; gridX = store.param.frames[0].x; }
+    if (key === 'calib') { calibCreated++; loadedTile = store.param.frames[0].tile; }
     if (key === 'mark') { markCreated++; loadedX = store.param.frames[0].x; }
-    return { flush: async () => { if (fail) throw new Error('offline'); if (key === 'calib' && pending) { await Promise.resolve(); store.param.frames[0].x = 250; pending = false; } } };
+    return { flush: async () => {
+      if (fail) throw new Error('offline');
+      if (key === 'grid' && pendingGrid) { await Promise.resolve(); store.param.frames[0].tile = nextTile; store.param.frames[0].tileY = nextTile; pendingGrid = false; }
+      if (key === 'calib' && pendingCalib) { await Promise.resolve(); store.param.frames[0].x = 250; pendingCalib = false; }
+    } };
   };
   const env = environment(await readFile(new URL('../web/index.html', import.meta.url), 'utf8'), store);
   const settle = () => new Promise(resolve => setImmediate(resolve));
   try {
     await import('../web/app.js?ui-tabs');
-    const get = id => env.ids.get(id);
-    await get('go-calib').click(); assert.equal(get('tab-calib').getAttribute('aria-selected'), 'true');
-    assert.equal(calibCreated, 1); pending = true;
-    await get('tabs').fire('click', { target: { closest: () => get('tab-mark') } }); await settle();
+    const get = id => env.ids.get(id), clickTab = async tab => { await get('tabs').fire('click', { target: { closest: () => get('tab-' + tab) } }); await settle(); };
+    await get('go-grid').click(); assert.equal(get('tab-grid').getAttribute('aria-selected'), 'true'); assert.equal(gridCreated, 1);
+    pendingGrid = true; await clickTab('calib');
+    assert.equal(loadedTile, 22); assert.equal(calibCreated, 1);
+    pendingCalib = true; await clickTab('mark');
     assert.equal(get('tab-mark').getAttribute('aria-selected'), 'true'); assert.equal(loadedX, 250); assert.equal(markCreated, 1);
-    await get('tabs').fire('click', { target: { closest: () => get('tab-calib') } }); await settle();
-    assert.equal(calibCreated, 1);
-    fail = true;
-    await get('tabs').fire('click', { target: { closest: () => get('tab-mark') } }); await settle();
-    assert.equal(get('tab-calib').getAttribute('aria-selected'), 'true'); assert.equal(get('pane-calib').hidden, false);
-    assert.equal(get('app-notice').hidden, false);
+    await clickTab('calib'); assert.equal(calibCreated, 1);
+    await clickTab('grid'); assert.equal(gridCreated, 2); assert.equal(gridX, 250);
+    pendingGrid = true; nextTile = 24; await clickTab('calib');
+    assert.equal(calibCreated, 2); assert.equal(loadedTile, 24); assert.equal(store.param.frames[0].x, 250);
+    fail = true; await clickTab('mark');
+    assert.equal(get('tab-calib').getAttribute('aria-selected'), 'true'); assert.equal(get('pane-calib').hidden, false); assert.equal(get('app-notice').hidden, false);
   } finally { env.restore(); }
 });

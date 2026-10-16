@@ -3,6 +3,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Autosave, History, Viewport, boundsOf, drawFrame, gridStart, imageURL, normalizeFrame } from '../web/editor-core.js';
 import { inheritObservation, snapPoint } from '../web/observation.js';
+import { applyMeasurement, guideFor, measureGrid, nearestGridLine, selectedGridPair } from '../web/grid-model.js';
+import { migrateParam, PARAM_VERSION } from '../web/frame-schema.js';
 
 test('撤销与重做保留独立快照, 新操作清除重做', () => {
   const h = new History(2), first = { cols: [{ y: 1 }] };
@@ -47,6 +49,45 @@ test('图片路径支持空格, 中文和百分号, 参数有限且保留锁定'
   assert.equal(f.src, 'frames/a.png'); assert.equal(f.x, 2400); assert.equal(f.y, 0); assert.equal(f.tile, 1); assert.equal(f.locked, true);
   assert.equal(gridStart(-31, 3, 20), -17);
 });
+test('选线吸附已有网格, 反向选线也能自动取得间隔格数', () => {
+  const f = { tile: 20, tileY: 30, phaseX: 3, phaseY: 7 };
+  assert.deepEqual(nearestGridLine(f, 'x', 104), { index: 5, coordinate: 103 });
+  assert.deepEqual(selectedGridPair(f, 'x', 104, 1102), { fixed: 103, moving: 1103, cells: 50 });
+  assert.deepEqual(selectedGridPair(f, 'y', 608, 98), { fixed: 607, moving: 97, cells: 17 });
+  assert.throws(() => selectedGridPair(f, 'x', 102, 104));
+});
+
+test('长距离双线标定保留固定端, 正向和反向测量得到相同格距', () => {
+  for (const moving of [20100.25, -19899.75]) {
+    const result = measureGrid(100.25, moving, 1000);
+    assert.equal(result.tile, 20); assert.equal(result.phase, .25); assert.equal(result.guide.fixed, 100.25);
+    assert.equal((result.guide.fixed - result.phase) / result.tile, 5);
+  }
+  assert.throws(() => measureGrid(10, 10, 10));
+  assert.throws(() => measureGrid(10, 1000, 0));
+  assert.throws(() => measureGrid(10, 1000, 1.5));
+});
+
+test('同步正方格时另一方向的基准也保持固定, 不改变拼接位置', () => {
+  const f = { tile: 20, tileY: 30, phaseX: 0, phaseY: 7, x: 900, y: 80, gridGuides: { y: { fixed: 37, moving: 337, cells: 10 } } };
+  const patch = applyMeasurement(f, 'x', { fixed: 100, moving: 1200, cells: 50 }, true);
+  assert.equal(patch.tile, 22); assert.equal(patch.tileY, 22); assert.equal(patch.phaseX, 12);
+  assert.equal(patch.gridGuides.y.fixed, 37); assert.equal(patch.phaseY, 15);
+  assert.equal((37 - patch.phaseY) / patch.tileY, 1);
+  assert.equal(f.x, 900); assert.equal(f.y, 80); assert.equal(patch.x, undefined);
+  assert.deepEqual(guideFor({ ...f, ...patch }, 'x'), { fixed: 100, moving: 1200, cells: 50 });
+});
+
+test('旧参数迁移保留网格与拼接, 新版保存后保留双线标定状态', () => {
+  const legacy = { version: 1, frames: [{ src: 'frames/a.png', x: 500, y: -9, tile: 20.86, tileY: 19.5, phaseX: 3.2, phaseY: 7, locked: true }] };
+  const migrated = migrateParam(legacy), f = migrated.frames[0];
+  assert.equal(migrated.version, PARAM_VERSION); assert.equal(f.x, 500); assert.equal(f.tileY, 19.5); assert.equal(f.phaseX, 3.2); assert.equal(f.locked, true); assert.equal(f.gridCalibrated, true);
+  f.gridGuides.x = { fixed: 103.2, moving: 1146.2, cells: 50 };
+  assert.deepEqual(migrateParam(migrated).frames[0].gridGuides, f.gridGuides);
+  assert.equal(normalizeFrame({ src: 'frames/new.png' }, 0).gridCalibrated, false);
+  assert.throws(() => migrateParam({ version: PARAM_VERSION + 1, frames: [] }));
+});
+
 const image = { naturalWidth: 1000, naturalHeight: 600 };
 const frame = { id: 'a', src: 'frames/a.png', x: 100, y: 200, tile: 20, tileY: 30, phaseX: 3, phaseY: 7, on: true, img: image };
 

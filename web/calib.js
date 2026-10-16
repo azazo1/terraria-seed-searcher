@@ -1,5 +1,6 @@
-/* 对齐页的选图, 锁定与参数操作. */
+/* 图片拼接的选图, 锁定与位置操作. */
 import { $, Autosave, History, Viewport, bindPan, bindViewButtons, boundsOf, drawFrame, editing, hitFrame, installLeaveGuard, loadFrames, notify, request, serializeFrames, setSaveState } from './editor-core.js';
+import { PARAM_VERSION } from './frame-schema.js';
 let frames = [], selected = null, saved = '', ready = false, alpha = .65, grid = .45, inputBefore = null;
 const history = new History();
 const autosave = new Autosave(save, () => dirty());
@@ -41,13 +42,14 @@ function renderList() {
     if (f.failed) { const error = document.createElement('p'); error.className = 'hint bad'; error.textContent = `${f.id} 图片加载失败`; $('frames').append(error); }
   }
 }
-const fields = ['x', 'y', 'tile', 'tileY', 'phaseX', 'phaseY'];
+const fields = ['x', 'y'];
 function sync() {
   $('inspector').hidden = !selected;
   if (!selected) return;
   $('selected-name').textContent = selected.id;
   for (const key of fields) { if (document.activeElement !== $(key)) $(key).value = Number(selected[key].toFixed(3)); }
   $('visible').checked = selected.on; $('locked').checked = selected.locked;
+  $('grid-summary').textContent = `格宽 ${selected.tile.toFixed(6)} px · 格高 ${selected.tileY.toFixed(6)} px · 相位 ${selected.phaseX.toFixed(3)}, ${selected.phaseY.toFixed(3)} px`;
   for (const key of ['x', 'y']) $(key).disabled = selected.locked;
   document.querySelectorAll('[data-dx]').forEach(b => b.disabled = selected.locked);
   $('selection').textContent = `${selected.id} · ${selected.img.naturalWidth} × ${selected.img.naturalHeight} px · ${selected.locked ? '位置已锁定' : '可拖动'}${selected.on ? '' : ' · 已隐藏'}`;
@@ -59,9 +61,6 @@ for (const key of fields) {
     if (!selected || !el.value.trim() || !el.checkValidity() || !Number.isFinite(el.valueAsNumber)) return;
     if (selected.locked && ['x', 'y'].includes(key)) return;
     selected[key] = el.valueAsNumber;
-    if ($('square').checked && ['tile', 'tileY'].includes(key)) {
-      const other = key === 'tile' ? 'tileY' : 'tile'; selected[other] = selected[key]; $(other).value = selected[key];
-    }
     changed();
   });
   el.addEventListener('change', () => {
@@ -108,7 +107,7 @@ async function save() {
   if (!ready || !frames.length) return false;
   const state = snapshot(), key = JSON.stringify(state); $('save').disabled = true;
   try {
-    await request('/api/frames', { version: 1, frames: state }); saved = key;
+    await request('/api/frames', { version: PARAM_VERSION, frames: state }); saved = key;
     if ($('save').classList.contains('retry')) notify('修改已自动保存.');
     setSaveState(dirty(), dirty() ? '正在保存新的修改...' : '已自动保存'); $('save').classList.remove('retry'); return true;
   } catch (e) { notify('自动保存失败: ' + e.message + '. 修改仍保留在此页面, 可点击重试保存.', true); setSaveState(true, '保存失败'); $('save').classList.add('retry'); return false; }
@@ -117,10 +116,10 @@ async function save() {
 $('save').onclick = () => autosave.flush().catch(() => {});
 $('next').onclick = async e => { if (!ready || !frames.some(f => f.on && !f.failed)) { e.preventDefault(); notify('请先导入并显示至少一张图片.', true); } else if (dirty()) { e.preventDefault(); try { await autosave.flush(); location.href = '/web/mark.html'; } catch {} } };
 $('reset').onclick = () => {
-  if (!frames.length || !confirm('重新排列全部图片并重置网格参数? 当前布局可以通过撤销恢复.')) return;
+  if (!frames.length || !confirm('重新排列全部图片? 网格标定保持不变, 当前布局可以通过撤销恢复.')) return;
   mutate(() => {
     let x = 0;
-    for (const f of frames) { Object.assign(f, { x, y: 0, tile: 20.86, tileY: 20.86, phaseX: 0, phaseY: 0, locked: false, on: true }); x += (f.img.naturalWidth || 1600) * .8; }
+    for (const f of frames) { Object.assign(f, { x, y: 0, locked: false, on: true }); x += (f.img.naturalWidth || 1600) * .8; }
   }); view.fit(boundsOf(frames));
 };
 addEventListener('keydown', e => {

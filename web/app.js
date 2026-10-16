@@ -1,9 +1,11 @@
 /* 步骤切换, 素材导入和搜索状态. */
 import { $, frameName, request } from './editor-core.js';
+import { migrateParam } from './frame-schema.js';
 const labels = {
-  import: ['导入主播截图', '导入原始截图, 然后进入对齐步骤.'],
-  calib: ['对齐与校准', '锁定图片, 微调参数. 修改自动保存, 下一步直接继承.'],
-  mark: ['标注地表', '点击或拖动标注. 自动保存, 可随时回到对齐步骤.'],
+  import: ['导入主播截图', '导入原始截图, 然后逐张标定方块网格.'],
+  grid: ['网格标定', '左键选第一条, 右键选第二条. Ctrl 拖动已选线平移相位, 左侧可调整间隔格数.'],
+  calib: ['图片拼接', '使用已标定的网格移动和拼接图片, 锁定位置以防误拖.'],
+  mark: ['标注地表', '点击或拖动标注. 自动继承网格标定和图片拼接.'],
   search: ['粗筛搜索', '使用已保存的最新观测进行搜索.'],
   candidates: ['查看候选', '查看搜索产出的候选记录.']
 };
@@ -18,7 +20,7 @@ function toast(message, error = false) {
 }
 function editorKey(tab) {
   const geometry = state?.param?.frames?.map(({ id, src, x, y, tile, tileY, phaseX, phaseY, on }) => ({ id, src, x, y, tile, tileY, phaseX, phaseY, on }));
-  return JSON.stringify(tab === 'calib' ? state?.frames : [state?.frames, geometry]);
+  return JSON.stringify([state?.frames, tab === 'mark' ? geometry : state?.param?.frames]);
 }
 function calibrationCurrent() {
   const names = state?.frames || [], savedFrames = state?.param?.frames || [];
@@ -35,7 +37,7 @@ async function ensureEditor(tab) {
   let editor = editors.get(tab); const key = editorKey(tab);
   if (editor && editor.key === key) return editor.loaded;
   if (editor) editor.iframe.remove();
-  const iframe = document.createElement('iframe'); iframe.title = labels[tab][0]; iframe.src = `/web/${tab === 'calib' ? 'calib' : 'mark'}.html?embedded=1`;
+  const iframe = document.createElement('iframe'); iframe.title = labels[tab][0]; iframe.src = `/web/${tab === 'grid' ? 'grid' : tab === 'calib' ? 'calib' : 'mark'}.html?embedded=1`;
   const loaded = new Promise((resolve, reject) => { iframe.onload = resolve; iframe.onerror = () => reject(new Error('编辑器加载失败')); });
   editor = { iframe, key, loaded }; editors.set(tab, editor); $('pane-' + tab).replaceChildren(iframe); await loaded;
 }
@@ -46,10 +48,12 @@ async function switchTab(tab, { updateHash = true } = {}) {
   $('page-hint').textContent = '正在保存当前进度并载入下一步骤...';
   try {
     await flushCurrent(); await refreshState();
-    if (tab === 'calib' && !state.frames.length) { toast('请先导入至少一张截图.'); return; }
-    if (tab === 'mark' && (!calibrationCurrent() || !state.param?.frames?.some(f => f.on !== false))) { toast('请先在对齐步骤中确认当前截图, 并显示至少一张图片. 参数会自动保存.'); return; }
+    if (editors.has(active)) editors.get(active).key = editorKey(active);
+    if (['grid', 'calib'].includes(tab) && !state.frames.length) { toast('请先导入至少一张截图.'); return; }
+    if (tab === 'calib' && !calibrationCurrent()) { toast('请先进入网格标定步骤. 各张图片的标定会自动传到拼接步骤.'); return; }
+    if (tab === 'mark' && (!calibrationCurrent() || !state.param?.frames?.some(f => f.on !== false))) { toast('请先标定网格, 再在图片拼接步骤中显示至少一张图片.'); return; }
     if (['search', 'candidates'].includes(tab) && state.marks?.columns) {
-      if (!calibrationCurrent()) { toast('截图列表已变化, 请先进入对齐步骤确认.'); return; }
+      if (!calibrationCurrent()) { toast('截图列表已变化, 请先进入网格标定步骤确认.'); return; }
       // 跨过标注 Tab 时也先继承最新格宽并生成观测, 避免搜索旧参数.
       await ensureEditor('mark');
       await editors.get('mark').iframe.contentWindow.editorBridge.flush();
@@ -60,7 +64,7 @@ async function switchTab(tab, { updateHash = true } = {}) {
       const button = $('tab-' + key); button.setAttribute('aria-selected', String(key === tab)); button.tabIndex = key === tab ? 0 : -1;
     }
     active = tab; $('page-title').textContent = labels[tab][0]; $('page-hint').textContent = labels[tab][1];
-    if (tab === 'calib' || tab === 'mark') await ensureEditor(tab);
+    if (['grid', 'calib', 'mark'].includes(tab)) await ensureEditor(tab);
     if (tab === 'candidates') await loadCandidates(true);
     if (tab === 'search') await loadLog();
     if (updateHash) history.replaceState(null, '', '#' + tab);
@@ -80,20 +84,22 @@ addEventListener('message', e => {
   switchTab(e.data.tab);
 });
 addEventListener('hashchange', () => switchTab(location.hash.slice(1)));
-$('go-calib').onclick = () => switchTab('calib'); $('go-candidates').onclick = () => switchTab('candidates');
+$('go-grid').onclick = () => switchTab('grid'); $('go-candidates').onclick = () => switchTab('candidates');
 function kv(container, pairs) {
   container.replaceChildren();
   for (const [label, value] of pairs) { const dt = document.createElement('dt'), dd = document.createElement('dd'); dt.textContent = label; dd.textContent = value; container.append(dt, dd); }
 }
 function duration(s) { return s < 60 ? `${Math.floor(s)} 秒` : `${Math.floor(s / 60)} 分 ${Math.floor(s % 60)} 秒`; }
 function renderState(st) {
+  if (st.param) st = { ...st, param: migrateParam(st.param) };
   state = st; $('connection').textContent = '已连接 · ' + new Date().toLocaleTimeString('zh-CN', { hour12: false });
   const names = st.frames || [], key = JSON.stringify(names);
   if (key !== frameKey) { frameKey = key; renderFrames(names); }
-  $('frame-count').textContent = `${names.length} 张`; $('go-calib').disabled = !names.length || uploading;
+  $('frame-count').textContent = `${names.length} 张`; $('go-grid').disabled = !names.length || uploading;
   $('frames-hint').textContent = names.length ? '点击缩略图上的 × 删除图片. 导入顺序不限制对齐时的图层顺序.' : '尚未导入截图. 点击上方按钮选择图片.';
   $('nav-import').textContent = names.length ? `${names.length} 张截图` : '从这里开始';
-  $('nav-calib').textContent = st.param ? `${st.param.frames.length} 张已保存` : names.length ? '可以开始对齐' : '等待截图';
+  $('nav-grid').textContent = st.param ? `${st.param.frames.filter(f => f.gridCalibrated).length} / ${names.length} 张已调整` : names.length ? '可以开始标定' : '等待截图';
+  $('nav-calib').textContent = calibrationCurrent() ? `${st.param.frames.length} 张可拼接` : '等待网格标定';
   $('nav-mark').textContent = st.marks?.columns ? `已标 ${st.marks.columns} 列` : st.param ? '可以开始标注' : '等待对齐';
   const sweep = st.sweep || {}, obs = st.observed;
   $('nav-search').textContent = sweep.running ? '搜索进行中' : obs ? '观测已就绪' : '等待标注';
@@ -135,7 +141,7 @@ async function importFiles(files) {
   if (uploading || switching) return;
   const supported = [...files].filter(f => /\.(png|jpe?g|webp|gif|bmp)$/i.test(f.name || '') || /^image\/(png|jpeg|webp|gif|bmp)$/.test(f.type));
   if (!supported.length) { toast('请选择支持的图片文件.'); return; }
-  uploading = true; $('pick').disabled = true; $('go-calib').disabled = true;
+  uploading = true; $('pick').disabled = true; $('go-grid').disabled = true;
   const failures = []; let done = 0;
   try {
     for (const [index, file] of supported.entries()) {
@@ -151,7 +157,7 @@ async function importFiles(files) {
     $('upload-status').textContent = `已导入 ${done} / ${supported.length} 张.`; await refreshState();
     if (failures.length) toast('部分图片导入失败. ' + failures.join(' / '), true);
   } catch (e) { toast('导入完成后无法更新状态: ' + e.message, true); }
-  finally { uploading = false; $('pick').disabled = false; $('go-calib').disabled = !state?.frames?.length; $('file').value = ''; }
+  finally { uploading = false; $('pick').disabled = false; $('go-grid').disabled = !state?.frames?.length; $('file').value = ''; }
 }
 $('pick').onclick = e => { e.stopPropagation(); $('file').click(); };
 $('dropzone').onclick = () => $('file').click();

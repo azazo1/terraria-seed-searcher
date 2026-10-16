@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>网格标定 - 种子搜索</title><link rel="stylesheet" href="/web/ui.css"><link rel="stylesheet" href="/web/grid.css"></head>
+<body class="editor">
+<header class="topbar">
+  <div class="breadcrumb"><a href="/">← 控制台</a><h1>网格标定</h1><span id="save-state" class="save-state">正在加载...</span></div>
+  <nav class="steps" aria-label="工作流程"><a href="/">1 截图</a><a href="/web/grid.html" aria-current="step">2 网格</a><a href="/web/calib.html">3 拼接</a><a href="/web/mark.html">4 标注</a></nav>
+  <div class="actions"><button id="undo" disabled title="Ctrl/⌘+Z">撤销</button><button id="redo" disabled title="Ctrl/⌘+Shift+Z">重做</button><button id="save" class="primary" disabled>重试保存</button></div>
+</header>
+<main class="editor-body">
+  <aside class="sidebar">
+    <div id="notice" class="notice" role="status" aria-live="polite"></div>
+    <section><div class="row spread"><h2>单张截图</h2><span id="count" class="badge">0 张</span></div><p class="hint">每张图独立标定. 这里图片保持不动, 下一步再拼接.</p><div id="frames" class="frame-list"></div></section>
+    <section id="inspector" hidden>
+      <h2 id="selected-name">双线标定</h2>
+      <div class="actions"><button id="axis-x" aria-pressed="true">横向格宽</button><button id="axis-y" aria-pressed="false">纵向格高</button></div>
+      <p class="hint">1. 左键拖选并调整第一条, 松开鼠标确认.<br>2. 右键拖选并调整第二条, 松开鼠标确认.<br>3. 调整一条时, 另一条保持固定.</p>
+      <button id="reselect">重新选两条</button>
+      <label class="field">两线间隔格数<input id="cells" type="number" min="1" max="100000" step="1" disabled></label>
+      <p class="hint">选线时自动计算格数, 也可在此修改. 修改格数保持两线位置不动, 重新计算格距. Esc 取消当前拖动.</p>
+      <div class="guide-card fixed"><div class="row spread"><strong>第一条 · 可拖动</strong><output id="fixed-value" class="measure"></output></div><button id="focus-fixed">定位第一条</button></div>
+      <div class="guide-card moving"><div class="row spread"><strong>第二条 · 可拖动</strong><output id="moving-value" class="measure"></output></div><button id="focus-moving">定位第二条</button></div>
+      <div class="metric"><strong id="spacing">-</strong><span id="measurement">两线距离 / 格数</span></div>
+      <label class="check"><input id="square" type="checkbox" checked>同步格宽与格高</label>
+      <div class="row spread"><span id="active-line" class="hint">微调第二条</span><select id="line-step" aria-label="测量线微调步长"><option value="0.1" selected>0.1 px</option><option value="1">1 px</option><option value="10">10 px</option></select></div>
+      <div class="actions"><button id="line-minus">−</button><button id="line-plus">+</button></div>
+    </section>
+    <section id="numeric" hidden><h2>精确参数</h2><div class="fields">
+      <label class="field">格宽 (px)<input id="tile" type="number" min="1" max="512" step="any"></label>
+      <label class="field">格高 (px)<input id="tileY" type="number" min="1" max="512" step="any"></label>
+      <label class="field">水平相位 (px)<input id="phaseX" type="number" step="any"></label>
+      <label class="field">垂直相位 (px)<input id="phaseY" type="number" step="any"></label>
+    </div><p class="hint">Ctrl + 拖动已选线时, 平移该方向的网格和两条线, 保持格距与间隔格数不变. 拖动中按下或松开 Ctrl 可即时切换, 不按 Ctrl 时另一条线固定并调整格距.</p><p class="hint">直接修改格宽或格高时, 对应的第一条所选线仍保持固定. 修改相位会平移该方向的网格和两条线.</p></section>
+    <section><h2>显示</h2><label class="field">网格不透明度<input id="grid" type="range" min="0" max="1" step="0.05" value="0.45"></label><details><summary>长图操作</summary><p>按住空格拖动, 或中键拖动来平移视图. 滚轮缩放. 使用定位按钮在长图两端之间切换, 缩放比例保持不变.<br>方向键微调最近操作的网格线, Shift 加速 10 倍. Esc 取消当前拖动并恢复原位置, F 适应当前图片. 每次拖动可以整体撤销.</p></details></section>
+  </aside>
+  <div id="workspace" class="workspace"><div class="viewbar"><button id="zoom-out" aria-label="缩小">−</button><output id="zoom">50%</output><button id="zoom-in" aria-label="放大">+</button><button id="actual">1:1</button><button id="fit">适应图片</button></div><div id="empty" class="empty" hidden><h2>先导入截图</h2><p>导入后, 在这里逐张标定方块网格.</p><a class="button primary" href="/">前往导入</a></div></div>
+</main>
+<footer class="statusbar"><span id="selection">正在加载图片...</span><span id="cursor">左键选第一条 · 右键选第二条 · Ctrl 拖动调整相位</span></footer>
+<script type="module" src="/web/grid.js"></script>
+</body></html>

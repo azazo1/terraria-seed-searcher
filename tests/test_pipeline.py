@@ -82,17 +82,17 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(json.loads(state)["sweep"]["candidates"], output.stat().st_size)
 
     def test_editor_links_open_the_tabbed_workbench(self):
-        for path, fragment in (("/web/calib.html", "calib"), ("/web/mark.html", "mark")):
+        for path, fragment in (("/web/grid.html", "grid"), ("/web/calib.html", "calib"), ("/web/mark.html", "mark")):
             with urlopen(self.url + path, timeout=3) as response:
                 self.assertEqual(response.status, 200)
                 self.assertTrue(response.url.endswith("/#" + fragment))
-        for path in ("/web/calib.html?embedded=1", "/web/mark.html?embedded=1"):
+        for path in ("/web/grid.html?embedded=1", "/web/calib.html?embedded=1", "/web/mark.html?embedded=1"):
             with urlopen(self.url + path, timeout=3) as response:
                 self.assertEqual(response.status, 200)
                 self.assertTrue(response.url.endswith(path))
 
     def test_new_assets_and_traversal_boundary(self):
-        for path in ("/", "/web/ui.css", "/web/editor-core.js", "/web/calib.js", "/web/mark.js", "/web/observation.js", "/web/app.js"):
+        for path in ("/", "/web/ui.css", "/web/grid.css", "/web/grid.js", "/web/grid-model.js", "/web/frame-schema.js", "/web/editor-core.js", "/web/calib.js", "/web/mark.js", "/web/observation.js", "/web/app.js"):
             with self.subTest(path=path):
                 code, body = self.call(path)
                 self.assertEqual(code, 200)

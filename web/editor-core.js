@@ -1,4 +1,6 @@
 /* 画布坐标, 可见区域绘制与操作历史. */
+import { migrateParam, normalizeFrame } from './frame-schema.js';
+export { normalizeFrame } from './frame-schema.js';
 export const $ = id => document.getElementById(id);
 export const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 export const editing = target => !!target?.closest('input,textarea,select,[contenteditable=true]');
@@ -22,18 +24,10 @@ export class History {
   undo(value) { if (!this.past.length) return null; this.future.push(structuredClone(value)); return this.past.pop(); }
   redo(value) { if (!this.future.length) return null; this.past.push(structuredClone(value)); return this.future.pop(); }
 }
-export function normalizeFrame(f, i) {
-  const finite = (v, fallback) => Number.isFinite(Number(v)) ? Number(v) : fallback;
-  const tile = clamp(finite(f.tile, 20.86), 1, 512);
-  return { id: f.id || `frame${i + 1}`, src: f.src.replace(/^\/+/, ''),
-    tile, tileY: clamp(finite(f.tileY, tile), 1, 512),
-    phaseX: finite(f.phaseX, 0), phaseY: finite(f.phaseY, 0),
-    x: finite(f.x, i * 1200), y: finite(f.y, 0), on: f.on !== false, locked: !!f.locked };
-}
 export async function loadFrames(fresh = false) {
   const names = await request('/frames');
   let saved = null;
-  if (!fresh) { try { saved = await request('/data/param.json'); } catch (e) { if (!e.message.includes('404')) throw e; } }
+  if (!fresh) { try { saved = migrateParam(await request('/data/param.json')); } catch (e) { if (!e.message.includes('404')) throw e; } }
   const namesSet = new Set(names);
   const frames = (saved?.frames || []).filter(f => namesSet.has(frameName(f.src))).map(normalizeFrame);
   const used = new Set(frames.map(f => frameName(f.src)));
@@ -149,16 +143,17 @@ export function bindViewButtons(view, frames) {
   $('zoom-out').onclick = () => view.scaleAt(view.zoom / 1.25);
   $('actual').onclick = () => view.scaleAt(1);
 }
-export function bindPan(view, onDown, onMove, onUp) {
+export function bindPan(view, onDown, onMove, onUp, { rightSelect = false } = {}) {
   let drag = null, space = false;
   addEventListener('keydown', e => { if (e.code === 'Space' && !editing(e.target)) { space = true; e.preventDefault(); } });
   addEventListener('keyup', e => { if (e.code === 'Space') space = false; });
-  const end = e => { if (!drag || (e.pointerId !== undefined && e.pointerId !== drag.pointerId)) return; const old = drag; drag = null; view.overlay.style.cursor = ''; if (old.kind !== 'pan') onUp?.(old); };
+  const end = e => { if (!drag || (e.pointerId !== undefined && e.pointerId !== drag.pointerId)) return; const old = drag; drag = null; view.overlay.style.cursor = ''; if (old.kind !== 'pan') onUp?.(old, e); };
   addEventListener('blur', () => { space = false; end({}); });
   view.overlay.addEventListener('pointerdown', e => {
     if (drag) return;
     const screen = view.screen(e), point = view.world(screen);
-    const mode = e.button === 1 || e.button === 2 || space ? { kind: 'pan', screen, x: view.panX, y: view.panY } : onDown(point, e);
+    const pan = e.button === 1 || space || (e.button === 2 && !rightSelect);
+    const mode = pan ? { kind: 'pan', screen, x: view.panX, y: view.panY } : onDown(point, e);
     if (!mode) return;
     e.preventDefault(); view.overlay.focus({ preventScroll: true }); view.overlay.setPointerCapture(e.pointerId);
     drag = { ...mode, pointerId: e.pointerId }; view.overlay.style.cursor = mode.kind === 'pan' ? 'grabbing' : 'crosshair';
@@ -193,7 +188,7 @@ export function installLeaveGuard(isDirty) {
   if (parent !== window) document.addEventListener('click', e => {
     const link = e.target.closest('a[href]'); if (!link) return;
     const url = new URL(link.href, location.href); if (url.origin !== location.origin) return;
-    const tab = url.pathname === '/web/calib.html' ? 'calib' : url.pathname === '/web/mark.html' ? 'mark' : url.pathname === '/' ? 'import' : null;
+    const tab = url.pathname === '/web/grid.html' ? 'grid' : url.pathname === '/web/calib.html' ? 'calib' : url.pathname === '/web/mark.html' ? 'mark' : url.pathname === '/' ? 'import' : null;
     if (tab) { e.preventDefault(); parent.postMessage({ type: 'terrseed-navigate', tab }, location.origin); }
   });
 }

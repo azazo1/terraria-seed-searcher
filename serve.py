@@ -176,7 +176,7 @@ class Handler(BaseHTTPRequestHandler):
         p = unquote(u.path)
         if p in ("/", "/index.html"):
             return self._file(ROOT / "web" / "index.html", "text/html; charset=utf-8")
-        editor_tabs = {"/web/calib.html": "calib", "/web/mark.html": "mark"}
+        editor_tabs = {"/web/grid.html": "grid", "/web/calib.html": "calib", "/web/mark.html": "mark"}
         if p in editor_tabs and (parse_qs(u.query).get("embedded") or [""])[0] != "1":
             self.send_response(302)
             self.send_header("Location", "/#" + editor_tabs[p])

@@ -161,7 +161,7 @@ try {
     if (inherited.migrated && marks.size) notify('已继承最新对齐和格宽. 旧标记已换算到新列网格, 请检查它们是否仍与地表对齐.' + (inherited.collisions ? ` 有 ${inherited.collisions} 个标记合并到同一列.` : ''));
     ready = true; saved = inherited.migrated && stored?.cols?.length ? '' : fingerprint(); changed(); $('empty').hidden = frames.length > 0; view.fit(boundsOf(frames));
     try { showDiagnostic(await request('/data/observed_meta.json')); } catch { showDiagnostic(null); }
-    if (result.changed) notify('截图列表有变化. 请先在对齐步骤确认新增或删除的图片.');
+    if (result.changed) notify('截图列表有变化. 请先在网格标定步骤确认新增或删除的图片.');
     resolveReady();
   }
 } catch (e) { notify('加载失败: ' + e.message, true); setSaveState(false, '加载失败'); rejectReady(e); }
