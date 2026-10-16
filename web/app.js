@@ -1,6 +1,7 @@
 /* 步骤切换, 素材导入和搜索状态. */
 import { $, frameName, request } from './editor-core.js';
 import { migrateParam } from './frame-schema.js';
+import { bindSearchParameters } from './search-controls.js';
 const labels = {
   import: ['导入主播截图', '导入原始截图, 然后逐张标定方块网格.'],
   grid: ['网格标定', '左键选第一条, 右键选第二条. Ctrl 拖动已选线平移相位, 左侧可调整间隔格数.'],
@@ -12,6 +13,7 @@ const labels = {
 let active = 'import', state = null, switching = false, polling = false, uploading = false;
 let frameKey = '', candidateKey = '', lastRun = false, stateRequest = 0;
 const editors = new Map();
+const searchParameters = bindSearchParameters(toast);
 function toast(message, error = false) {
   const container = $('app-notice'); container.hidden = !message; container.classList.toggle('error', error); container.replaceChildren();
   if (!message) return;
@@ -181,9 +183,8 @@ async function loadCandidates(force = false) {
   $('candidate-hint').textContent = result.rows?.length ? `显示前 ${result.rows.length} 条候选. 需要结合游戏内地形进一步核对.` : '暂无候选. 完成标注并运行搜索后会在这里显示.';
 }
 $('start').onclick = async () => {
-  const tol = $('tol'), offer = $('offer'); if (!tol.reportValidity() || !offer.reportValidity() || !tol.value || !offer.value) return;
   $('start').disabled = true;
-  try { await request('/api/sweep', { tol: tol.valueAsNumber, offer: offer.valueAsNumber, scales: '1.00' }); await refreshState(); await loadLog(); }
+  try { const parameters = searchParameters.read(); await request('/api/sweep', parameters); await refreshState(); await loadLog(); }
   catch (e) { toast('启动失败: ' + e.message, true); await poll(); }
 };
 $('stop').onclick = async () => { $('stop').disabled = true; try { await request('/api/sweep/stop', {}); await refreshState(); await loadLog(); } catch (e) { toast('停止失败: ' + e.message, true); } };

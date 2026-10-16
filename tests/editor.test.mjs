@@ -6,6 +6,16 @@ import { inheritObservation, snapPoint } from '../web/observation.js';
 import { canvasPoint, findFrame, frameGrid, frameSize, gridGap, imagePoint } from '../web/frame-geometry.js';
 import { applyMeasurement, guideFor, measureGrid, nearestGridLine, selectedGridPair } from '../web/grid-model.js';
 import { migrateParam, PARAM_VERSION } from '../web/frame-schema.js';
+import { DEFAULT_SEARCH_PARAMETERS, decodeSearchParameters, encodeSearchParameters, normalizeSearchParameters } from '../web/search-parameters.js';
+
+test('粗筛参数完整往返, 保留各项设置并拒绝错误类型, 范围和文件版本', () => {
+  const parameters = { ...DEFAULT_SEARCH_PARAMETERS, tol: .3, offer: .7, range: [100, 200], spawn_lo: 3100, spawn_hi: 3250, cols: 4000, scales: '0.97,1.00,1.03', batch: 12345, device: 2 };
+  assert.deepEqual(decodeSearchParameters(encodeSearchParameters(parameters)), parameters);
+  assert.deepEqual(decodeSearchParameters('\uFEFF' + encodeSearchParameters(parameters)), parameters);
+  assert.deepEqual(normalizeSearchParameters(DEFAULT_SEARCH_PARAMETERS), DEFAULT_SEARCH_PARAMETERS);
+  for (const patch of [{ tol: NaN }, { offer: 1.1 }, { range: [5, 5] }, { range: [-1, 5] }, { spawn_lo: 3300 }, { cols: 3200 }, { batch: 1.5 }, { device: '2' }, { scales: '1,,2' }, { scales: '1;alert(1)' }, { scales: '1,1,1,1,1,1,1,1,1' }, { extra: true }]) assert.throws(() => normalizeSearchParameters({ ...parameters, ...patch }));
+  for (const text of ['{', 'null', '[]', '{}', 'x'.repeat(65537), JSON.stringify({ ...JSON.parse(encodeSearchParameters(parameters)), version: 999 })]) assert.throws(() => decodeSearchParameters(text));
+});
 
 test('撤销与重做保留独立快照, 新操作清除重做', () => {
   const h = new History(2), first = { cols: [{ y: 1 }] };

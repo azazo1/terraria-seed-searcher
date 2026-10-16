@@ -83,6 +83,15 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual((serve.DATA / "observed.txt").read_text(), original)
         self.call("/api/marks", {"version": 2, "tile": 20, "marker": 1, "cols": []})
 
+    def test_importable_search_parameters_reach_the_search_command(self):
+        self.call("/api/marks", {"version": 2, "tile": 20, "marker": 7, "cols": []})
+        params = {"tol": 0.35, "offer": 0.7, "range": [100, 200], "spawn_lo": 3100, "spawn_hi": 3250, "cols": 4000, "scales": "0.97,1.00,1.03", "batch": 12345, "device": 2}
+        command = serve.sweep_command(params)
+        flags = {"--tol": ["0.35"], "--offer": ["0.7"], "--range": ["100", "200"], "--spawn-lo": ["3100"], "--spawn-hi": ["3250"], "--cols": ["4000"], "--scales": ["0.97,1.00,1.03"], "--batch": ["12345"], "--device": ["2"], "--marker": ["7"]}
+        for flag, values in flags.items():
+            start = command.index(flag) + 1
+            self.assertEqual(command[start:start + len(values)], values)
+
     def test_search_result_is_read_from_searcher_output(self):
         output = serve.WORK / "candidates_gpu2.txt"
         output.write_text("seed=fixture spawn_x=3200 scale=1.00 score=0.9000\n", encoding="utf-8")
@@ -102,7 +111,7 @@ class PipelineTest(unittest.TestCase):
                 self.assertTrue(response.url.endswith(path))
 
     def test_new_assets_and_traversal_boundary(self):
-        for path in ("/", "/web/ui.css", "/web/grid.css", "/web/grid.js", "/web/grid-model.js", "/web/frame-schema.js", "/web/frame-geometry.js", "/web/editor-core.js", "/web/calib.js", "/web/mark.js", "/web/observation.js", "/web/app.js"):
+        for path in ("/", "/web/ui.css", "/web/grid.css", "/web/grid.js", "/web/grid-model.js", "/web/frame-schema.js", "/web/frame-geometry.js", "/web/editor-core.js", "/web/calib.js", "/web/mark.js", "/web/observation.js", "/web/app.js", "/web/search-parameters.js", "/web/search-controls.js"):
             with self.subTest(path=path):
                 code, body = self.call(path)
                 self.assertEqual(code, 200)

@@ -3,6 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { migrateParam } from '../web/frame-schema.js';
+import { DEFAULT_SEARCH_PARAMETERS, decodeSearchParameters, encodeSearchParameters } from '../web/search-parameters.js';
 
 function environment(html, store) {
   const elements = [], ids = new Map(), events = new Map(), raf = [], draw = [];
@@ -59,7 +60,7 @@ function environment(html, store) {
       return { ok: true, json: async () => ({ ok: true, observed: data.cols?.length ? { valid: data.cols.length, step_rate: 10 } : null }) };
     }
     if (store.readFailure?.url === url) return { ok: false, status: store.readFailure.status, json: async () => ({ error: store.readFailure.error }) };
-    const data = url === '/api/state' ? { frames: store.names, param: store.param, marks: { columns: store.marks?.cols?.length || 0 }, observed: null, searcher_built: false, sweep: { running: false, candidates: 0 } } : url === '/api/sweep/log' ? { log: '' } : url === '/api/candidates' ? { rows: [] } : url === '/frames' ? store.names : url === '/data/param.json' ? store.param : url === '/data/marks.json' ? store.marks : null;
+    const data = url === '/api/state' ? { frames: store.names, param: store.param, marks: { columns: store.marks?.cols?.length || 0 }, observed: store.observed || null, searcher_built: !!store.searcher_built, sweep: { running: false, candidates: 0 } } : url === '/api/sweep/log' ? { log: '' } : url === '/api/candidates' ? { rows: [] } : url === '/frames' ? store.names : url === '/data/param.json' ? store.param : url === '/data/marks.json' ? store.marks : null;
     return { ok: !!data, status: data ? 200 : 404, json: async () => structuredClone(data || { error: 'not found: ' + url.split('/').pop() }) };
   };
   const names = ['document', 'Image', 'fetch', 'window', 'parent', 'location', 'ResizeObserver', 'devicePixelRatio', 'requestAnimationFrame', 'addEventListener', 'confirm', 'history', 'setInterval'];
@@ -394,6 +395,33 @@ test('标注页面恢复旧进度, 擦除可撤销, 清空也会自动保存', a
     assert.equal(store.marks.cols.length, 0);
     await get('undo').click(); await globalThis.editorBridge.flush(); assert.equal(store.marks.cols.length, 1);
   } finally { env.restore(); }
+});
+
+test('粗筛参数导入整体校验且不启动搜索, 导出往返并把全部设置用于手动启动', async () => {
+  const store = { names: [], searcher_built: true, observed: { valid: 30, columns: 30, marker: 7, step_rate: 10 } };
+  const env = environment(await readFile(new URL('../web/index.html', import.meta.url), 'utf8'), store);
+  const createURL = URL.createObjectURL, downloads = [];
+  URL.createObjectURL = blob => { downloads.push(blob); return createURL.call(URL, blob); };
+  try {
+    await import('../web/app.js?ui-search-parameters');
+    const get = id => env.ids.get(id), file = get('search-parameters-file');
+    const importText = async text => { file.files = [{ size: new Blob([text]).size, text: async () => text }]; await file.fire('change'); };
+    const parameters = { ...DEFAULT_SEARCH_PARAMETERS, tol: .35, offer: .7, range: [100, 200], spawn_lo: 3100, spawn_hi: 3250, cols: 4000, scales: '0.97,1.00,1.03', batch: 12345, device: 2 };
+    await importText(encodeSearchParameters(parameters));
+    assert.equal(get('tol').value, '0.35'); assert.equal(get('spawn-lo').value, '3100'); assert.equal(get('search-scales').value, parameters.scales); assert.equal(file.value, ''); assert.equal(env.post.length, 0);
+    const ids = ['tol', 'offer', 'seed-from', 'seed-to', 'spawn-lo', 'spawn-hi', 'search-cols', 'search-scales', 'search-batch', 'search-device'];
+    const before = ids.map(id => get(id).value), invalid = JSON.parse(encodeSearchParameters(parameters)); invalid.parameters.tol = .9; invalid.parameters.offer = 2;
+    for (const text of ['{', JSON.stringify(invalid), JSON.stringify({ ...invalid, version: 999 })]) { await importText(text); assert.deepEqual(ids.map(id => get(id).value), before); assert.equal(env.post.length, 0); }
+    let readLarge = false; file.files = [{ size: 65537, text: async () => { readLarge = true; return ''; } }]; await file.fire('change'); assert.equal(readLarge, false); assert.deepEqual(ids.map(id => get(id).value), before);
+    let release; file.files = [{ size: 1, text: () => new Promise(resolve => { release = resolve; }) }]; const first = file.fire('change');
+    const latest = { ...parameters, batch: 999 }; await importText(encodeSearchParameters(latest)); release(encodeSearchParameters(parameters)); await first;
+    assert.equal(get('search-batch').value, '999'); assert.equal(env.post.length, 0);
+    await get('export-search-parameters').click(); assert.equal(downloads.length, 1); assert.deepEqual(decodeSearchParameters(await downloads[0].text()), latest);
+    assert.ok(env.elements.some(element => element.tagName === 'A' && element.download?.endsWith('.json')));
+    assert.equal(get('start').disabled, false); await get('start').click();
+    const starts = env.post.filter(post => post.url === '/api/sweep'); assert.equal(starts.length, 1); assert.deepEqual(starts[0].data, latest);
+    get('offer').value = '2'; await get('start').click(); assert.equal(env.post.filter(post => post.url === '/api/sweep').length, 1);
+  } finally { URL.createObjectURL = createURL; env.restore(); }
 });
 
 test('网格, 拼接和标注按顺序继承, 返回修改后不会被旧编辑器覆盖', async () => {
