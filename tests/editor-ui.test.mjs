@@ -2,6 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { migrateParam } from '../web/frame-schema.js';
 
 function environment(html, store) {
   const elements = [], ids = new Map(), events = new Map(), raf = [], draw = [];
@@ -93,6 +94,29 @@ test('拼接页面继承网格, 锁定阻止拖动, 重排与撤销不重置标�
     assert.deepEqual(store.param.frames[0].gridGuides, calibrated.gridGuides); assert.equal(get('tile'), undefined);
     while (env.raf.length) env.raf.shift()();
     assert.ok(globalThis.editorBridge.diagnostics().paints >= 1);
+  } finally { env.restore(); }
+});
+
+test('拼接可按比例或尺寸等比缩放, 匹配参考格宽, 保存撤销并受锁定保护', async () => {
+  const original = { id: 'a', src: 'frames/a.png', tile: 10, tileY: 10, x: 100, y: 200, phaseX: 2, phaseY: 3, gridCalibrated: true, gridGuides: { x: { fixed: 102, moving: 602, cells: 50 } } };
+  const store = { names: ['a.png', 'b.png'], param: { version: 2, frames: [original, { id: 'b', src: 'frames/b.png', tile: 20, tileY: 20, x: 3000 }] } };
+  const env = environment(await readFile(new URL('../web/calib.html', import.meta.url), 'utf8'), store);
+  try {
+    await import('../web/calib.js?ui-calib-scale');
+    const bridge = globalThis.editorBridge, get = id => env.ids.get(id);
+    const set = async (id, value) => { const input = get(id); env.doc.activeElement = input; await input.fire('focus'); input.value = value; await input.fire('input'); await input.fire('change'); env.doc.activeElement = env.doc.body; await input.fire('blur'); await bridge.flush(); };
+    await set('scale', '200');
+    assert.equal(store.param.frames[0].scale, 2); assert.equal(Number(get('width').value), 3600); assert.equal(Number(get('height').value), 2000);
+    assert.equal(store.param.frames[0].x, 100); assert.equal(store.param.frames[0].y, 200); assert.equal(store.param.frames[0].tile, 10); assert.deepEqual(store.param.frames[0].gridGuides, original.gridGuides);
+    await get('undo').click(); await bridge.flush(); assert.equal(store.param.frames[0].scale, 1);
+    await get('redo').click(); await bridge.flush(); assert.equal(store.param.frames[0].scale, 2);
+    await set('width', '5400'); assert.equal(store.param.frames[0].scale, 3); assert.equal(Number(get('height').value), 3000);
+    await set('height', '500'); assert.equal(store.param.frames[0].scale, .5); assert.equal(Number(get('width').value), 900);
+    await get('match-scale').click(); await bridge.flush(); assert.equal(store.param.frames[0].scale, 2);
+    for (const invalid of ['', '0', 'NaN', '10001']) { await set('scale', invalid); assert.equal(store.param.frames[0].scale, 2); }
+    get('locked').checked = true; await get('locked').fire('change'); assert.equal(get('scale').disabled, true); assert.equal(get('width').disabled, true); assert.equal(get('match-scale').disabled, true);
+    await set('scale', '300'); assert.equal(store.param.frames[0].scale, 2);
+    get('locked').checked = false; await get('locked').fire('change'); await get('reset-scale').click(); await bridge.flush(); assert.equal(store.param.frames[0].scale, 1);
   } finally { env.restore(); }
 });
 
@@ -194,7 +218,7 @@ test('拖动中按下和松开 Ctrl 即时切换相位模式, 两端不跳动且
     const point = x => { const d = bridge.diagnostics(); return { clientX: d.panX + x * d.zoom, clientY: d.panY + 500 * d.zoom }; };
     const key = async (type, ctrlKey) => { for (const fn of env.events.get(type) || []) await fn({ key: 'Control', ctrlKey, target: overlay, preventDefault() {} }); };
     const near = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-8, `${actual} != ${expected}`);
-    await bridge.flush(); const before = structuredClone(store.param);
+    await bridge.flush(); const before = migrateParam(store.param);
     await overlay.fire('pointerdown', point(100)); await overlay.fire('pointermove', { ...point(120), ctrlKey: false });
     await key('keydown', true);
     assert.equal(bridge.diagnostics().dragMode, 'phase');
@@ -274,6 +298,27 @@ test('首次没有标注文件仍可开始, 预览只占一格并居中, 连续�
     assert.equal(store.marks.tile, frame.tile);
     await env.ids.get('undo').click(); await bridge.flush(); assert.equal(store.marks.cols.length, 0);
     await env.ids.get('redo').click(); await bridge.flush(); assert.equal(store.marks.cols.length, 4);
+  } finally { env.restore(); }
+});
+
+test('标注继承单图缩放, 保存原像素锚点并在再次缩放后跟随', async () => {
+  const frame = { id: 'a', src: 'frames/a.png', x: 100, y: 200, tile: 10, tileY: 10, phaseX: 2, phaseY: 3, scale: 2, on: true };
+  const store = { names: ['a.png'], param: migrateParam({ version: 2, frames: [frame] }) };
+  const html = await readFile(new URL('../web/mark.html', import.meta.url), 'utf8');
+  let env = environment(html, store);
+  try {
+    await import('../web/mark.js?ui-mark-scaled');
+    const bridge = globalThis.editorBridge, overlay = env.elements.filter(e => e.tagName === 'CANVAS').at(-1), d = bridge.diagnostics();
+    assert.equal(d.tile, 20); assert.equal(d.x0, 104);
+    const point = { clientX: d.panX + 174 * d.zoom, clientY: d.panY + 296 * d.zoom };
+    await overlay.fire('pointerdown', point); await overlay.fire('pointerup', point); await bridge.flush();
+    assert.deepEqual(store.marks.cols[0], { c: 3, y: 286, t: 'block', frameId: 'a', imageX: 37, imageY: 43 });
+  } finally { env.restore(); }
+  store.param.frames[0].scale = .5; env = environment(html, store);
+  try {
+    await import('../web/mark.js?ui-mark-rescaled'); await globalThis.editorBridge.flush();
+    assert.equal(store.marks.tile, 5); assert.equal(store.marks.cols[0].c, 3); assert.equal(store.marks.cols[0].y, 221.5);
+    assert.equal(store.marks.cols[0].imageX, 37); assert.equal(store.marks.cols[0].imageY, 43);
   } finally { env.restore(); }
 });
 

@@ -14,18 +14,24 @@
   <aside class="sidebar">
     <div id="notice" class="notice" role="status" aria-live="polite"></div>
     <section><div class="row spread"><h2>截图图层</h2><span id="count" class="badge">0 张</span></div>
-      <p class="hint">选择一张图片后拖动拼接. 网格继承上一步标定, 锁定位置可防止误拖.</p>
+      <p class="hint">选择一张图片后拖动拼接. 网格继承上一步标定, 锁定位置与大小可防止误拖.</p>
       <div id="frames" class="frame-list"></div>
       <div class="actions"><button id="lock-all">全部锁定</button><button id="unlock-all">全部解锁</button></div>
     </section>
     <section id="inspector" hidden><div class="row spread"><h2 id="selected-name">图片参数</h2><button id="focus-frame" title="只适应选中图片">定位图片</button></div>
-      <div class="row spread"><label class="check"><input type="checkbox" id="visible">显示图片</label><label class="check"><input type="checkbox" id="locked">锁定位置</label></div>
+      <div class="row spread"><label class="check"><input type="checkbox" id="visible">显示图片</label><label class="check"><input type="checkbox" id="locked">锁定位置与大小</label></div>
       <div class="fields">
         <label class="field">水平位置 X (px)<input id="x" type="number" step="0.1"></label>
         <label class="field">垂直位置 Y (px)<input id="y" type="number" step="0.1"></label>
       </div>
       <div class="row spread"><span class="hint">位置微调</span><label class="check">步长 <select id="nudge-step"><option value="0.1">0.1 px</option><option value="1" selected>1 px</option><option value="10">10 px</option></select></label></div>
       <div class="nudge"><button class="up" data-dx="0" data-dy="-1" aria-label="向上微调">↑</button><button class="left" data-dx="-1" data-dy="0" aria-label="向左微调">←</button><button data-dx="0" data-dy="1" aria-label="向下微调">↓</button><button data-dx="1" data-dy="0" aria-label="向右微调">→</button></div>
+      <h3>图片大小</h3>
+      <label class="field">缩放比例 (%)<input id="scale" type="number" min="1" max="10000" step="any" value="100"></label>
+      <div class="fields"><label class="field">显示宽度 (px)<input id="width" type="number" min="1" step="any"></label><label class="field">显示高度 (px)<input id="height" type="number" min="1" step="any"></label></div>
+      <p class="hint">等比缩放, 左上角位置保持不变, 图片和网格一起变化. 原始截图与网格标定不变.</p>
+      <div class="actions"><button id="match-scale">匹配参考图格宽</button><button id="reset-scale">恢复 100%</button></div>
+      <p id="scale-reference" class="hint"></p>
       <h3>继承的网格标定</h3>
       <p id="grid-summary" class="hint"></p>
       <a class="button" href="/web/grid.html">返回网格标定</a>

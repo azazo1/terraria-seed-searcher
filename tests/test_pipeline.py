@@ -92,7 +92,7 @@ class PipelineTest(unittest.TestCase):
                 self.assertTrue(response.url.endswith(path))
 
     def test_new_assets_and_traversal_boundary(self):
-        for path in ("/", "/web/ui.css", "/web/grid.css", "/web/grid.js", "/web/grid-model.js", "/web/frame-schema.js", "/web/editor-core.js", "/web/calib.js", "/web/mark.js", "/web/observation.js", "/web/app.js"):
+        for path in ("/", "/web/ui.css", "/web/grid.css", "/web/grid.js", "/web/grid-model.js", "/web/frame-schema.js", "/web/frame-geometry.js", "/web/editor-core.js", "/web/calib.js", "/web/mark.js", "/web/observation.js", "/web/app.js"):
             with self.subTest(path=path):
                 code, body = self.call(path)
                 self.assertEqual(code, 200)

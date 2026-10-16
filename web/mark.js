@@ -1,6 +1,7 @@
 /* 逐列标注, 吸附预览与自动保存. */
 import { $, Autosave, History, Viewport, bindPan, bindViewButtons, boundsOf, drawFrame, editing, installLeaveGuard, loadFrames, notify, request, serializeFrames, setSaveState } from './editor-core.js';
-import { inheritObservation, snapPoint } from './observation.js';
+import { inheritObservation, MARKS_VERSION, snapPoint } from './observation.js';
+import { canvasPoint, imagePoint } from './frame-geometry.js';
 const TOOLS = [
   { id: 'block', name: '完整方块', color: '#86e4ad', glyph: '■' },
   { id: 'slopeL', name: '斜坡 左高右低', color: '#ffd185', glyph: '◣' },
@@ -24,7 +25,9 @@ const view = new Viewport($('workspace'), (ctx, v) => {
   const b = v.bounds, radius = 4 / v.zoom;
   if ($('show-marks').checked) {
     for (const [col, m] of marks) {
-      const cell = pick({ x: x0 + (col + .5) * T, y: m.y + .001 });
+      const source = frames.find(f => f.id === m.frameId);
+      const point = source && Number.isFinite(m.imageX) && Number.isFinite(m.imageY) ? canvasPoint(source, { x: m.imageX, y: m.imageY }) : { x: x0 + (col + .5) * T, y: m.y };
+      const cell = snapPoint({ ...point, y: point.y + .001 }, source ? [source] : frames, x0, T);
       if (!cell) continue;
       const { x, y, left, top, width, height } = cell;
       if (left > b.right || left + width < b.x || top > b.bottom || top + height < b.y) continue;
@@ -84,7 +87,10 @@ function pick(point) { return point && snapPoint(point, frames, x0, T); }
 function paint(point) {
   if (!point) return;
   if (tool === 'erase') marks.delete(point.col);
-  else marks.set(point.col, { y: Math.round(point.surfaceY * 1000) / 1000, t: tool });
+  else {
+    const local = imagePoint(point.f, { x: point.x, y: point.surfaceY });
+    marks.set(point.col, { y: Math.round(point.surfaceY * 1000) / 1000, t: tool, frameId: point.f.id, imageX: local.x, imageY: local.y });
+  }
   view.invalidate(false);
 }
 bindPan(view, (point, e) => {
@@ -134,7 +140,7 @@ async function save() {
   if (!ready || !frames.length) return false;
   const state = snapshot(), key = JSON.stringify(state); $('save').disabled = true;
   try {
-    const result = await request('/api/marks', { version: 1, tile: T, x0, frames: serializeFrames(frames), ...state });
+    const result = await request('/api/marks', { version: MARKS_VERSION, tile: T, x0, frames: serializeFrames(frames), ...state });
     saved = key; showDiagnostic(result.observed);
     if ($('save').classList.contains('retry')) notify('修改已自动保存.');
     setSaveState(dirty(), dirty() ? '正在保存新的修改...' : '已自动保存'); $('save').classList.remove('retry'); return true;
@@ -161,8 +167,8 @@ try {
     try { stored = await request('/data/marks.json'); } catch (e) { if (e.status !== 404) throw e; }
     const inherited = inheritObservation(stored, frames);
     T = inherited.tile; x0 = inherited.x0; marker = inherited.marker;
-    marks = new Map(inherited.cols.map(({ c, y, t }) => [c, { y, t }]));
-    if (inherited.migrated && marks.size) notify('已继承最新对齐和格宽. 旧标记已换算到新列网格, 请检查它们是否仍与地表对齐.' + (inherited.collisions ? ` 有 ${inherited.collisions} 个标记合并到同一列.` : ''));
+    marks = new Map(inherited.cols.map(({ c, ...m }) => [c, m]));
+    if (inherited.migrated && marks.size) notify('已继承最新图片位置, 缩放与网格. 请检查标记是否仍与地表对齐.' + (inherited.collisions ? ` 有 ${inherited.collisions} 个标记合并到同一列.` : ''));
     ready = true; saved = inherited.migrated && stored?.cols?.length ? '' : fingerprint(); changed(); $('empty').hidden = frames.length > 0; view.fit(boundsOf(frames));
     try { showDiagnostic(await request('/data/observed_meta.json')); } catch { showDiagnostic(null); }
     if (result.changed) notify('截图列表有变化. 请先在网格标定步骤确认新增或删除的图片.');

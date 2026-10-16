@@ -19,7 +19,7 @@ function toast(message, error = false) {
   const close = document.createElement('button'); close.textContent = '关闭'; close.onclick = () => { container.hidden = true; }; container.append(span, close);
 }
 function editorKey(tab) {
-  const geometry = state?.param?.frames?.map(({ id, src, x, y, tile, tileY, phaseX, phaseY, on }) => ({ id, src, x, y, tile, tileY, phaseX, phaseY, on }));
+  const geometry = state?.param?.frames?.map(({ id, src, x, y, scale, tile, tileY, phaseX, phaseY, on }) => ({ id, src, x, y, scale, tile, tileY, phaseX, phaseY, on }));
   return JSON.stringify([state?.frames, tab === 'mark' ? geometry : state?.param?.frames]);
 }
 function calibrationCurrent() {

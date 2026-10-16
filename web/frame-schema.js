@@ -1,5 +1,6 @@
 /* 标定配置版本与旧参数迁移. */
-export const PARAM_VERSION = 2;
+import { MIN_SCALE, MAX_SCALE } from './frame-geometry.js';
+export const PARAM_VERSION = 3;
 const finite = (v, fallback) => Number.isFinite(Number(v)) ? Number(v) : fallback;
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 export function normalizeFrame(f, i) {
@@ -12,6 +13,7 @@ export function normalizeFrame(f, i) {
   return { id: f.id || `frame${i + 1}`, src: f.src.replace(/^\/+/, ''),
     tile, tileY: clamp(finite(f.tileY, tile), 1, 512),
     phaseX: finite(f.phaseX, 0), phaseY: finite(f.phaseY, 0),
+    scale: clamp(finite(f.scale, 1), MIN_SCALE, MAX_SCALE),
     x: finite(f.x, i * 1200), y: finite(f.y, 0), on: f.on !== false, locked: !!f.locked,
     gridCalibrated: !!f.gridCalibrated, gridGuides: guides };
 }

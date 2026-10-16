@@ -1,6 +1,7 @@
 /* 图片拼接的选图, 锁定与位置操作. */
 import { $, Autosave, History, Viewport, bindPan, bindViewButtons, boundsOf, drawFrame, editing, hitFrame, installLeaveGuard, loadFrames, notify, request, serializeFrames, setSaveState } from './editor-core.js';
 import { PARAM_VERSION } from './frame-schema.js';
+import { frameGrid, frameSize, MIN_SCALE, MAX_SCALE, scaleOf } from './frame-geometry.js';
 let frames = [], selected = null, saved = '', ready = false, alpha = .65, grid = .45, inputBefore = null;
 const history = new History();
 const autosave = new Autosave(save, () => dirty());
@@ -42,34 +43,56 @@ function renderList() {
     if (f.failed) { const error = document.createElement('p'); error.className = 'hint bad'; error.textContent = `${f.id} 图片加载失败`; $('frames').append(error); }
   }
 }
-const fields = ['x', 'y'];
+const fields = ['x', 'y', 'scale', 'width', 'height'];
+const referenceFrame = () => frames.filter(f => f !== selected && f.on && !f.failed).sort((a, b) => a.x - b.x)[0];
+function fieldValue(key) {
+  if (key === 'scale') return scaleOf(selected) * 100;
+  if (key === 'width' || key === 'height') return frameSize(selected)[key];
+  return selected[key];
+}
 function sync() {
   $('inspector').hidden = !selected;
   if (!selected) return;
   $('selected-name').textContent = selected.id;
-  for (const key of fields) { if (document.activeElement !== $(key)) $(key).value = Number(selected[key].toFixed(3)); }
+  for (const key of fields) { if (document.activeElement !== $(key)) $(key).value = Number(fieldValue(key).toFixed(3)); }
   $('visible').checked = selected.on; $('locked').checked = selected.locked;
-  $('grid-summary').textContent = `格宽 ${selected.tile.toFixed(6)} px · 格高 ${selected.tileY.toFixed(6)} px · 相位 ${selected.phaseX.toFixed(3)}, ${selected.phaseY.toFixed(3)} px`;
-  for (const key of ['x', 'y']) $(key).disabled = selected.locked;
+  const effective = frameGrid(selected), size = frameSize(selected), reference = referenceFrame();
+  $('grid-summary').textContent = `缩放后格宽 ${effective.width.toFixed(6)} px, 格高 ${effective.height.toFixed(6)} px. 原图格宽 ${selected.tile.toFixed(6)} px, 格高 ${selected.tileY.toFixed(6)} px.`;
+  for (const key of fields) $(key).disabled = selected.locked;
+  $('reset-scale').disabled = selected.locked;
+  $('match-scale').disabled = selected.locked || !reference;
+  $('scale-reference').textContent = reference ? `参考图 ${reference.id}, 有效格宽 ${frameGrid(reference).width.toFixed(6)} px. 匹配只调整当前图片的等比缩放, 不移动图片.` : '显示另一张图片后, 可按它的有效格宽匹配缩放.';
   document.querySelectorAll('[data-dx]').forEach(b => b.disabled = selected.locked);
-  $('selection').textContent = `${selected.id} · ${selected.img.naturalWidth} × ${selected.img.naturalHeight} px · ${selected.locked ? '位置已锁定' : '可拖动'}${selected.on ? '' : ' · 已隐藏'}`;
+  $('selection').textContent = `${selected.id} · ${size.width.toFixed(1)} x ${size.height.toFixed(1)} px · ${(scaleOf(selected) * 100).toFixed(2)}% · ${selected.locked ? '位置与大小已锁定' : '可拖动'}${selected.on ? '' : ' · 已隐藏'}`;
 }
 for (const key of fields) {
   const el = $(key);
   el.addEventListener('focus', () => { inputBefore = snapshot(); });
   el.addEventListener('input', () => {
     if (!selected || !el.value.trim() || !el.checkValidity() || !Number.isFinite(el.valueAsNumber)) return;
-    if (selected.locked && ['x', 'y'].includes(key)) return;
-    selected[key] = el.valueAsNumber;
-    changed();
+    if (selected.locked) return;
+    if (key === 'x' || key === 'y') selected[key] = el.valueAsNumber;
+    else {
+      const scale = key === 'scale' ? el.valueAsNumber / 100 : el.valueAsNumber / (key === 'width' ? selected.img.naturalWidth : selected.img.naturalHeight);
+      if (scale < MIN_SCALE || scale > MAX_SCALE) return;
+      selected.scale = scale;
+    }
+    sync(); changed();
   });
   el.addEventListener('change', () => {
     if (inputBefore && JSON.stringify(inputBefore) !== fingerprint()) { history.push(inputBefore); inputBefore = snapshot(); }
     // 输入为空或非法时恢复最后一次有效值, 避免 NaN 破坏视口.
-    if (selected) el.value = Number(selected[key].toFixed(3)); changed();
+    if (selected) el.value = Number(fieldValue(key).toFixed(3)); changed();
   });
-  el.addEventListener('blur', () => { if (selected) el.value = Number(selected[key].toFixed(3)); inputBefore = null; });
+  el.addEventListener('blur', () => { if (selected) el.value = Number(fieldValue(key).toFixed(3)); inputBefore = null; });
 }
+$('reset-scale').onclick = () => { if (selected && !selected.locked && scaleOf(selected) !== 1) mutate(() => { selected.scale = 1; }); };
+$('match-scale').onclick = () => {
+  const reference = referenceFrame(); if (!selected || selected.locked || !reference) return;
+  const scale = frameGrid(reference).width / selected.tile;
+  if (scale < MIN_SCALE || scale > MAX_SCALE) { notify('匹配后的缩放超出 1%-10000% 范围, 请检查网格标定.', true); return; }
+  if (Math.abs(scale - scaleOf(selected)) > 1e-12) mutate(() => { selected.scale = scale; });
+};
 $('visible').onchange = () => mutate(() => { selected.on = $('visible').checked; });
 $('locked').onchange = () => mutate(() => { selected.locked = $('locked').checked; });
 $('lock-all').onclick = () => { if (frames.some(f => !f.locked)) mutate(() => frames.forEach(f => f.locked = true)); };
@@ -119,7 +142,7 @@ $('reset').onclick = () => {
   if (!frames.length || !confirm('重新排列全部图片? 网格标定保持不变, 当前布局可以通过撤销恢复.')) return;
   mutate(() => {
     let x = 0;
-    for (const f of frames) { Object.assign(f, { x, y: 0, locked: false, on: true }); x += (f.img.naturalWidth || 1600) * .8; }
+    for (const f of frames) { Object.assign(f, { x, y: 0, locked: false, on: true }); x += (frameSize(f).width || 1600) * .8; }
   }); view.fit(boundsOf(frames));
 };
 addEventListener('keydown', e => {

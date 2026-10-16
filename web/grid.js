@@ -18,7 +18,7 @@ window.editorBridge = {
   diagnostics: () => ({ ready, frames: frames.length, dirty: dirty(), axis, guide: activeGuide(), selecting: !!transaction?.selecting, dragMode: transaction ? transaction.phaseAxis ? 'phase' : 'spacing' : null, activeEnd, zoom: view.zoom, panX: view.panX, panY: view.panY })
 };
 if (parent !== window) document.body.classList.add('embedded');
-const local = () => selected ? { ...selected, x: 0, y: 0, on: true } : null;
+const local = () => selected ? { ...selected, x: 0, y: 0, scale: 1, on: true } : null;
 const view = new Viewport($('workspace'), (ctx, v) => {
   if (selected) drawFrame(ctx, v, local(), { grid });
 }, (ctx, v) => {

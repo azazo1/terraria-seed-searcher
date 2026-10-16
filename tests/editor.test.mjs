@@ -3,6 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Autosave, History, Viewport, boundsOf, drawFrame, gridStart, imageURL, normalizeFrame } from '../web/editor-core.js';
 import { inheritObservation, snapPoint } from '../web/observation.js';
+import { canvasPoint, findFrame, frameGrid, frameSize, imagePoint } from '../web/frame-geometry.js';
 import { applyMeasurement, guideFor, measureGrid, nearestGridLine, selectedGridPair } from '../web/grid-model.js';
 import { migrateParam, PARAM_VERSION } from '../web/frame-schema.js';
 
@@ -117,6 +118,36 @@ test('向右移动原点后, 左侧已有标记仍保留非负列号', () => {
   const next = inheritObservation(stored, [{ ...frame, x: 150 }]);
   assert.equal(next.cols.length, 1); assert.ok(next.cols[0].c >= 0); assert.ok(next.x0 <= 103);
   assert.equal(next.cols[0].t, 'tree');
+});
+
+test('单图缩放统一图片范围, 网格相位, 命中和像素转换', () => {
+  const scaled = { ...frame, scale: 2 };
+  assert.deepEqual(frameSize(scaled), { width: 2000, height: 1200 });
+  assert.deepEqual(frameGrid(scaled), { x: 106, y: 214, width: 40, height: 60 });
+  assert.deepEqual(boundsOf([scaled]), { x: 100, y: 200, right: 2100, bottom: 1400 });
+  assert.equal(findFrame([scaled], { x: 1800, y: 1200 }), scaled);
+  assert.equal(findFrame([scaled], { x: 2100, y: 1200 }), undefined);
+  const pixel = { x: 37.5, y: 49 }; assert.deepEqual(imagePoint(scaled, canvasPoint(scaled, pixel)), pixel);
+  const snapped = snapPoint({ x: 187, y: 275 }, [scaled], 106, 40);
+  assert.deepEqual([snapped.col, snapped.x, snapped.y, snapped.surfaceY, snapped.width, snapped.height], [2, 206, 304, 274, 40, 60]);
+  const calls = [], ctx = new Proxy({}, { get: (_target, key) => key === 'measureText' ? () => ({ width: 20 }) : (...args) => calls.push([key, ...args]), set: () => true });
+  drawFrame(ctx, { bounds: { x: 200, y: 300, right: 400, bottom: 500 }, zoom: 1 }, scaled, { grid: 0 });
+  assert.deepEqual(calls.find(c => c[0] === 'drawImage').slice(2), [50, 50, 100, 100, 200, 300, 200, 200]);
+  assert.equal(migrateParam({ version: 2, frames: [frame] }).frames[0].scale, 1);
+  assert.equal(migrateParam({ version: PARAM_VERSION, frames: [scaled] }).frames[0].scale, 2);
+});
+
+test('缩放后标注与出生点跟随原图片像素, 原有高度不会留在旧尺寸上', () => {
+  const stored = { version: 1, tile: 20, x0: 103, marker: 10, frames: [frame], cols: [{ c: 4, y: 267, t: 'block' }] };
+  const smaller = { ...frame, scale: .5 };
+  const inherited = inheritObservation(stored, [smaller]);
+  assert.equal(inherited.tile, 10); assert.equal(inherited.x0, 101.5); assert.equal(inherited.marker, 10);
+  assert.equal(inherited.cols[0].c, 4); assert.equal(inherited.cols[0].y, 233.5);
+  assert.equal(inherited.cols[0].frameId, 'a'); assert.equal(inherited.cols[0].imageX, 93); assert.equal(inherited.cols[0].imageY, 67);
+  const saved = { ...inherited, version: 2, frames: [smaller] };
+  const moved = inheritObservation(saved, [{ ...smaller, x: 500, y: 700, scale: 1 }]);
+  assert.equal(moved.cols[0].c, 4); assert.equal(moved.cols[0].y, 767);
+  assert.equal(moved.cols[0].imageX, 93); assert.equal(moved.cols[0].imageY, 67);
 });
 
 test('仅绘制可见图片区域, 视口外图片不触发 drawImage', () => {

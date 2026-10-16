@@ -1,5 +1,6 @@
 /* 画布坐标, 可见区域绘制与操作历史. */
 import { migrateParam, normalizeFrame } from './frame-schema.js';
+import { findFrame, frameGrid, frameSize, scaleOf } from './frame-geometry.js';
 export { normalizeFrame } from './frame-schema.js';
 export const $ = id => document.getElementById(id);
 export const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
@@ -55,28 +56,26 @@ export function boundsOf(frames) {
   const valid = frames.filter(f => f.on !== false && f.img?.naturalWidth);
   if (!valid.length) return null;
   return { x: Math.min(...valid.map(f => f.x)), y: Math.min(...valid.map(f => f.y)),
-    right: Math.max(...valid.map(f => f.x + f.img.naturalWidth)), bottom: Math.max(...valid.map(f => f.y + f.img.naturalHeight)) };
+    right: Math.max(...valid.map(f => f.x + frameSize(f).width)), bottom: Math.max(...valid.map(f => f.y + frameSize(f).height)) };
 }
-export function hitFrame(frames, p) {
-  return [...frames].reverse().find(f => f.on !== false && f.img?.naturalWidth && p.x >= f.x && p.x <= f.x + f.img.naturalWidth && p.y >= f.y && p.y <= f.y + f.img.naturalHeight);
-}
+export const hitFrame = findFrame;
 export function gridStart(min, origin, step) { return origin + Math.ceil((min - origin) / step) * step; }
 export function drawFrame(ctx, view, f, { opacity = 1, grid = .35, selected = false } = {}) {
   if (f.on === false || !f.img.naturalWidth) return;
-  const b = view.bounds, w = f.img.naturalWidth, h = f.img.naturalHeight;
+  const b = view.bounds, scale = scaleOf(f), { width: w, height: h } = frameSize(f), effective = frameGrid(f);
   const x1 = Math.max(f.x, b.x), y1 = Math.max(f.y, b.y), x2 = Math.min(f.x + w, b.right), y2 = Math.min(f.y + h, b.bottom);
   if (x2 <= x1 || y2 <= y1) return;
   ctx.globalAlpha = opacity;
-  ctx.drawImage(f.img, x1 - f.x, y1 - f.y, x2 - x1, y2 - y1, x1, y1, x2 - x1, y2 - y1);
+  ctx.drawImage(f.img, (x1 - f.x) / scale, (y1 - f.y) / scale, (x2 - x1) / scale, (y2 - y1) / scale, x1, y1, x2 - x1, y2 - y1);
   // 每条线都对应一个方块边界, 缩放只改变显示比例, 不省略网格.
   if (grid > 0) {
     ctx.globalAlpha = grid; ctx.lineWidth = 1 / view.zoom;
-    const sx = f.tile;
-    const sy = f.tileY;
+    const sx = effective.width;
+    const sy = effective.height;
     ctx.strokeStyle = '#ff8292'; ctx.beginPath();
-    for (let x = gridStart(x1, f.x + f.phaseX, sx); x <= x2; x += sx) { ctx.moveTo(x, y1); ctx.lineTo(x, y2); }
+    for (let x = gridStart(x1, effective.x, sx); x <= x2; x += sx) { ctx.moveTo(x, y1); ctx.lineTo(x, y2); }
     ctx.stroke(); ctx.strokeStyle = '#6ed6ff'; ctx.beginPath();
-    for (let y = gridStart(y1, f.y + f.phaseY, sy); y <= y2; y += sy) { ctx.moveTo(x1, y); ctx.lineTo(x2, y); }
+    for (let y = gridStart(y1, effective.y, sy); y <= y2; y += sy) { ctx.moveTo(x1, y); ctx.lineTo(x2, y); }
     ctx.stroke();
   }
   ctx.globalAlpha = 1;
