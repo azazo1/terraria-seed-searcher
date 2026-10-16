@@ -1,0 +1,15 @@
+# 构建产物
+build/
+*.o
+*.exe
+sweep
+sweep2
+sweep2_large
+sweep2_small
+
+# 临时文件
+.tmp/
+*.log
+
+# 本机特定
+known_hosts

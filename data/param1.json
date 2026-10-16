@@ -1,0 +1,48 @@
+{
+ "frames": [
+  {
+   "id": "f3",
+   "src": "shots/spawn-ingame-03.png",
+   "tile": 20.86,
+   "tileY": 20.86,
+   "phaseX": 9,
+   "phaseY": 10.6,
+   "x": -2195,
+   "y": 516,
+   "on": true
+  },
+  {
+   "id": "f4",
+   "src": "shots/spawn-ingame-04.png",
+   "tile": 20.86,
+   "tileY": 20.86,
+   "phaseX": -3.4,
+   "phaseY": 9.4,
+   "x": -1327,
+   "y": 601,
+   "on": true
+  },
+  {
+   "id": "f1",
+   "src": "shots/spawn-ingame-01.png",
+   "tile": 20.86,
+   "tileY": 20.86,
+   "phaseX": 4.6,
+   "phaseY": -0.5,
+   "x": -460,
+   "y": 403,
+   "on": true
+  },
+  {
+   "id": "f2",
+   "src": "shots/spawn-ingame-02.png",
+   "tile": 20.86,
+   "tileY": 20.86,
+   "phaseX": 6.1,
+   "phaseY": -9,
+   "x": 519,
+   "y": 327,
+   "on": true
+  }
+ ]
+}
