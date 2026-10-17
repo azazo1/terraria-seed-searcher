@@ -3,7 +3,7 @@ import { $, Autosave, History, Viewport, bindPan, bindViewButtons, boundsOf, dra
 import { inheritObservation, MARKS_VERSION, snapPoint } from './observation.js';
 import { canvasPoint, gridGap, imagePoint } from './frame-geometry.js';
 const TOOLS = [
-  { id: 'block', name: '完整方块', color: '#86e4ad', glyph: '■' },
+  { id: 'block', name: '地表方块', color: '#86e4ad', glyph: '■' },
   { id: 'tree', name: '作废', color: '#f49fd3', glyph: '×' },
   { id: 'erase', name: '擦除标记', color: '#a1b2c3', glyph: '⌫' }
 ];
