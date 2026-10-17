@@ -13,7 +13,7 @@ export function renderSearchProgress(get, progress, backend) {
   const rate = progress.rate ?? (scanned > 0 && progress.elapsed > 0 ? scanned / progress.elapsed : null);
   const eta = progress.eta ?? (rate && progress.status === 'running' ? (progress.total - scanned) / rate : null);
   panel.dataset.status = progress.status;
-  get('progress-backend').textContent = { cpu: '主机 CPU', cuda: '主机 CUDA', webgpu: '浏览器 WebGPU' }[backend];
+  get('progress-backend').textContent = { cpu: '主机 CPU', cuda: '主机 CUDA', mlx: '主机 Apple GPU', webgpu: '浏览器 WebGPU' }[backend];
   get('progress-status').textContent = labels[progress.status] || '准备中';
   const percent = fraction * 100;
   get('progress-percent').textContent = percent > 0 && percent < .01 ? '< 0.01%' : `${percent.toFixed(2)}%`;
@@ -24,5 +24,5 @@ export function renderSearchProgress(get, progress, backend) {
   get('progress-eta').textContent = progress.status === 'completed' ? '已完成' : eta !== null && Number.isFinite(eta) ? `约 ${progressDuration(eta)}` : progress.status === 'running' || progress.status === 'preparing' ? '正在估算' : '--';
   get('progress-candidates').textContent = number(progress.candidates || 0);
   get('progress-remaining').textContent = number(progress.total - scanned);
-  get('progress-note').textContent = progress.status === 'running' ? backend === 'cuda' ? '每批完成后更新计数. 速度为本次平均值, 剩余时间会随计算速度变化.' : '速度为本次平均值, 剩余时间会随计算速度变化.' : progress.status === 'preparing' ? '正在准备设备并校验计算结果, 首批完成后显示速度和剩余时间.' : progress.status === 'failed' ? '搜索未正常完成, 请查看运行输出. 已发布的候选仍可查看.' : progress.status === 'stopped' || progress.status === 'stopping' ? '显示已确认完成的扫描量. 已发布的候选仍可查看.' : '本次扫描已完成. 候选还需要结合游戏内地形进一步核对.';
+  get('progress-note').textContent = progress.status === 'running' ? backend === 'cuda' || backend === 'mlx' ? '每批完成后更新计数. 速度为本次平均值, 剩余时间会随计算速度变化.' : '速度为本次平均值, 剩余时间会随计算速度变化.' : progress.status === 'preparing' ? '正在准备设备并校验计算结果, 首批完成后显示速度和剩余时间.' : progress.status === 'failed' ? '搜索未正常完成, 请查看运行输出. 已发布的候选仍可查看.' : progress.status === 'stopped' || progress.status === 'stopping' ? '显示已确认完成的扫描量. 已发布的候选仍可查看.' : '本次扫描已完成. 候选还需要结合游戏内地形进一步核对.';
 }

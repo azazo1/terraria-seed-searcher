@@ -22,6 +22,11 @@ build:
 build-cpu:
     c++ -O3 -std=c++17 -pthread -ffp-contract=off -o sweep-cpu src/cpu/search.cpp
 
+# just build-mlx
+# 编译 macOS 原生 MLX 搜索器 (Apple GPU). 需要先执行: brew install mlx mlx-c
+build-mlx:
+    c++ -O3 -std=c++17 -I"$(brew --prefix mlx-c)/include" -L"$(brew --prefix mlx)/lib" -L"$(brew --prefix mlx-c)/lib" -Wl,-rpath,"$(brew --prefix mlx)/lib" -Wl,-rpath,"$(brew --prefix mlx-c)/lib" -o sweep-mlx src/mlx/sweep_mlx.cpp -lmlx -lmlxc
+
 # just check
 # 快速自检: 控制台能否正常读状态 (不需要 GPU)
 check:

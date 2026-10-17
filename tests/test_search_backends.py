@@ -1,6 +1,7 @@
 """原生共享地形与浏览器参考实现对拍, 仅使用合成观测."""
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -139,3 +140,63 @@ threading.Event().wait(30)
             self.assertEqual(int(row["spawn_x"]), match["spawn"])
             self.assertEqual(float(row["scale"]), match["scale"])
             self.assertAlmostEqual(float(row["score"]), match["quantized"] / 10000000, places=7)
+
+
+def homebrew_prefix(name):
+    try:
+        return Path(subprocess.check_output(["brew", "--prefix", name], text=True, stderr=subprocess.DEVNULL).strip())
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+@unittest.skipUnless(sys.platform == "darwin", "MLX 后端只在 macOS 上有意义")
+class MlxBackendTest(unittest.TestCase):
+    """MLX 后端与 CPU 后端对拍, 只使用合成观测."""
+
+    @classmethod
+    def setUpClass(cls):
+        mlx, mlxc = homebrew_prefix("mlx"), homebrew_prefix("mlx-c")
+        if not (mlx and mlxc and shutil.which("c++")):
+            raise unittest.SkipTest("需要 homebrew 的 mlx 和 mlx-c")
+        (ROOT / ".tmp").mkdir(exist_ok=True)
+        cls.temp = tempfile.TemporaryDirectory(prefix="mlx-test-", dir=ROOT / ".tmp")
+        cls.scratch = Path(cls.temp.name)
+        cls.cpu = cls.scratch / "search-cpu"
+        cls.mlx = cls.scratch / "sweep-mlx"
+        subprocess.run(["c++", "-O2", "-std=c++17", "-pthread", "-ffp-contract=off", str(ROOT / "src/cpu/search.cpp"), "-o", str(cls.cpu)], check=True, capture_output=True)
+        subprocess.run([
+            "c++", "-O2", "-std=c++17", f"-I{mlxc / 'include'}", f"-L{mlx / 'lib'}", f"-L{mlxc / 'lib'}",
+            f"-Wl,-rpath,{mlx / 'lib'}", f"-Wl,-rpath,{mlxc / 'lib'}",
+            str(ROOT / "src/mlx/sweep_mlx.cpp"), "-o", str(cls.mlx), "-lmlx", "-lmlxc",
+        ], check=True, capture_output=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.temp.cleanup()
+
+    def profile(self, binary, seed, extra=()):
+        return subprocess.check_output([str(binary), "--profile", str(seed), "3400", *extra], text=True).split()
+
+    def test_gpu_profile_matches_cpu_column_by_column(self):
+        for seed in (0, 42):
+            self.assertEqual(self.profile(self.mlx, seed), self.profile(self.cpu, seed), f"seed={seed}")
+
+    def test_gpu_search_matches_cpu_candidates(self):
+        profile = [int(value) for value in self.profile(self.cpu, 1234567)]
+        heights = [profile[3050 + j] / 8.0 for j in range(85)]
+        path = self.scratch / "observed-mlx.txt"
+        path.write_text(" ".join(f"{value:.6f}" for value in heights))
+        arguments = ["--range", "1234500", "1234600", "--cols", "3400", "--marker", "141", "--spawn-lo", "3180",
+                     "--spawn-hi", "3220", "--tol", ".5", "--offer", ".5"]
+        cpu_dir, mlx_dir = self.scratch / "cpu", self.scratch / "mlx"
+        cpu_dir.mkdir()
+        mlx_dir.mkdir()
+        cpu = subprocess.run([str(self.cpu), str(path), *arguments, "--threads", "2"], cwd=cpu_dir, check=True, capture_output=True, text=True)
+        gpu = subprocess.run([str(self.mlx), str(path), *arguments], cwd=mlx_dir, check=True, capture_output=True, text=True)
+        self.assertIn("scanned=100", cpu.stdout)
+        self.assertIn("scanned=100", gpu.stdout)
+        self.assertEqual(re.search(r"matched=(\d+)", gpu.stdout)[1], re.search(r"matched=(\d+)", cpu.stdout)[1])
+        expected = (cpu_dir / "candidates_cpu.txt").read_text().splitlines()
+        actual = (mlx_dir / "candidates_mlx.txt").read_text().splitlines()
+        self.assertTrue(expected)
+        self.assertEqual(actual, expected)

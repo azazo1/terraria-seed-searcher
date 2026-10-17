@@ -21,6 +21,10 @@ SCHEMA_VERSION = 1
 ALGORITHM = "terraria-1.4.5.8-medium-v1"
 CPU_BLOCK = 65536
 CUDA_BLOCK = 400000
+# MLX 每次启动都要把 Metal 内核从源码编译一次, 工作块需要足够大才能摊薄这部分固定开销.
+MLX_BLOCK = 4000000
+CANDIDATE_FILES = {"cpu": "candidates_cpu.txt", "cuda": "candidates_gpu2.txt", "mlx": "candidates_mlx.txt"}
+HOST_BACKENDS = tuple(CANDIDATE_FILES)
 LOG = logging.getLogger(__name__)
 DEFAULTS = {"tol": .5, "offer": .55, "range": [0, 2147483647], "spawn_lo": 3180, "spawn_hi": 3220, "cols": 3400, "scales": "1.00", "batch": 400000, "device": 0}
 
@@ -235,7 +239,7 @@ class TaskManager:
         return any(task["status"] in ("running", "stopping") for task in self.summaries())
 
     def create(self, backend, raw_parameters, observation):
-        if backend not in ("cpu", "cuda", "webgpu"):
+        if backend not in (*HOST_BACKENDS, "webgpu"):
             raise ValueError("未知搜索后端.")
         settings = parameters(raw_parameters)
         observation = observation_archive.validate_observation(observation)
@@ -293,7 +297,12 @@ class TaskManager:
                     store.update(status="paused"); break
                 if start >= end:
                     store.update(status="completed"); break
-                count = min(settings["batch"], CUDA_BLOCK) if meta["backend"] == "cuda" else runtime.get("block_size", min(128, CPU_BLOCK))
+                if meta["backend"] == "cuda":
+                    count = min(settings["batch"], CUDA_BLOCK)
+                elif meta["backend"] == "mlx":
+                    count = MLX_BLOCK
+                else:
+                    count = runtime.get("block_size", min(128, CPU_BLOCK))
                 block_started = time.monotonic()
                 end = min(end, start + count)
                 attempt = store.directory / ("block-" + uuid.uuid4().hex)
@@ -309,7 +318,7 @@ class TaskManager:
                     code = process.wait()
                 if code:
                     raise RuntimeError(f"搜索进程退出码 {code}. 请查看运行输出, 可以从最近断点重试.")
-                name = "candidates_cpu.txt" if meta["backend"] == "cpu" else "candidates_gpu2.txt"
+                name = CANDIDATE_FILES[meta["backend"]]
                 if not (attempt / name).is_file():
                     raise RuntimeError("搜索器未生成候选文件, 当前工作块未提交.")
                 rows = candidate_rows(attempt / name)
@@ -328,7 +337,7 @@ class TaskManager:
                     directory = store.directory / previous
                     if directory.resolve().parent == store.directory.resolve():
                         # 断点已事务提交, 只清理已知的旧工作块输出, 保留任务及最新输出.
-                        for name in ("candidates_cpu.txt", "candidates_cpu.txt.tmp", "candidates_gpu2.txt", "candidates_gpu2.txt.tmp", "output.txt"):
+                        for name in tuple(f"{path}{suffix}" for path in CANDIDATE_FILES.values() for suffix in ("", ".tmp")) + ("output.txt",):
                             target = directory / name
                             if target.resolve().parent == directory.resolve():
                                 try:
@@ -414,7 +423,7 @@ class TaskManager:
         with self.lock:
             runtime = self.runtime.get(task_id)
             if runtime and runtime.get("block"):
-                name = "candidates_cpu.txt" if store.read()["backend"] == "cpu" else "candidates_gpu2.txt"
+                name = CANDIDATE_FILES[store.read()["backend"]]
                 live = candidate_rows(runtime["block"]["directory"] / name, 2000)
                 by_seed = {row["seed"]: row for row in saved + live}
                 saved = heapq.nsmallest(limit, by_seed.values(), key=lambda row: (-row["score"], row["seed"]))

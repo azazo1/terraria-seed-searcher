@@ -192,7 +192,7 @@ class PipelineTest(unittest.TestCase):
             self.assertEqual(spawn.call_args.kwargs["cwd"], str(serve.WORK))
             _, state = self.call("/api/state")
             self.assertTrue(json.loads(state)["cpu_searcher_built"])
-            self.assertEqual(json.loads(state)["searcher_paths"], {"cuda": str(serve.SEARCHER), "cpu": str(executable)})
+            self.assertEqual(json.loads(state)["searcher_paths"], {backend: str(serve.searcher_path(backend)) for backend in serve.HOST_BACKENDS})
             self.assertEqual(json.loads(state)["sweep"]["backend"], "cpu")
             self.call("/api/sweep/stop", {})
             proc.terminate.assert_called_once()

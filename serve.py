@@ -40,7 +40,17 @@ DATA = ROOT / "data"
 WORK = ROOT / "workdir"
 SEARCHER = ROOT / ("sweep2.exe" if os.name == "nt" else "sweep2")
 CPU_SEARCHER = ROOT / ("sweep-cpu.exe" if os.name == "nt" else "sweep-cpu")
+# MLX 后端只在 macOS 上有意义; 未编译时按搜索器不存在提示, 不做平台特判.
+MLX_SEARCHER = ROOT / "sweep-mlx"
+HOST_BACKENDS = ("cpu", "cuda", "mlx")
+CANDIDATE_NAMES = {"cpu": "candidates_cpu.txt", "cuda": "candidates_gpu2.txt", "mlx": "candidates_mlx.txt"}
 DEFAULT_SEED_RANGE = (0, 2147483647)
+
+
+def searcher_path(backend):
+    """按后端取搜索器路径. 每次读取模块全局, 便于测试替换."""
+    return {"cpu": CPU_SEARCHER, "cuda": SEARCHER, "mlx": MLX_SEARCHER}[backend]
+
 
 STATE_LOCK = threading.RLock()
 FILE_LOCK = threading.RLock()
@@ -58,7 +68,7 @@ def task_manager():
     key = str(WORK.resolve())
     with STATE_LOCK:
         if key not in _TASK_MANAGERS:
-            _TASK_MANAGERS[key] = search_tasks.TaskManager(WORK / "tasks", {"cpu": CPU_SEARCHER, "cuda": SEARCHER}, webgpu_engine_key)
+            _TASK_MANAGERS[key] = search_tasks.TaskManager(WORK / "tasks", {backend: searcher_path(backend) for backend in HOST_BACKENDS}, webgpu_engine_key)
         return _TASK_MANAGERS[key]
 
 
@@ -92,8 +102,8 @@ def write_json(path, obj):
 
 def candidates_path(backend=None):
     backend = backend or SWEEP.get("backend", "cuda")
-    generated = WORK / ("candidates_cpu.txt" if backend == "cpu" else "candidates_gpu2.txt")
-    return generated if backend == "cpu" or generated.is_file() else DATA / "candidates.txt"
+    generated = WORK / CANDIDATE_NAMES.get(backend, CANDIDATE_NAMES["cuda"])
+    return generated if backend in ("cpu", "mlx") or generated.is_file() else DATA / "candidates.txt"
 
 
 def load_marks():
@@ -191,7 +201,7 @@ def sweep_command(params):
     spawn_hi = int(params.get("spawn_hi", 3220))
     lo, hi = params.get("range", list(DEFAULT_SEED_RANGE))
     return [
-        str(CPU_SEARCHER if params.get("backend") == "cpu" else SEARCHER), str(DATA / "observed.txt"),
+        str(searcher_path(params.get("backend") if params.get("backend") in HOST_BACKENDS else "cuda")), str(DATA / "observed.txt"),
         "--range", str(lo), str(hi),
         "--tol", str(params.get("tol", 0.5)),
         "--offer", str(params.get("offer", 0.55)),
@@ -292,7 +302,7 @@ class Handler(BaseHTTPRequestHandler):
                 progress = search_progress.snapshot(SWEEP, time.time())
                 elapsed = progress["elapsed"] if progress else 0
             cands = candidates_path()
-            candidate_stats = {backend: path.stat() if path.is_file() else None for backend in ("cpu", "cuda") for path in (candidates_path(backend),)}
+            candidate_stats = {backend: path.stat() if path.is_file() else None for backend in HOST_BACKENDS for path in (candidates_path(backend),)}
             candidate_bytes = {backend: info.st_size if info else 0 for backend, info in candidate_stats.items()}
             candidate_versions = {backend: f"{info.st_mtime_ns}:{info.st_size}" if info else "" for backend, info in candidate_stats.items()}
             tasks = task_manager().summaries()
@@ -301,7 +311,7 @@ class Handler(BaseHTTPRequestHandler):
             if host_tasks and not running:
                 current = next((task for task in host_tasks if task["status"] in ("running", "stopping")), host_tasks[0])
                 sweep_state.update(running=current["status"] in ("running", "stopping"), backend=current["backend"], progress=current["progress"], elapsed=current["progress"]["elapsed"], task_id=current["id"])
-                for backend in ("cpu", "cuda"):
+                for backend in HOST_BACKENDS:
                     latest = next((task for task in host_tasks if task["backend"] == backend), None)
                     if latest:
                         sweep_state["candidate_versions"][backend] = latest["version"]
@@ -312,13 +322,14 @@ class Handler(BaseHTTPRequestHandler):
                 "observed": observed,
                 "searcher_built": SEARCHER.is_file(),
                 "cpu_searcher_built": CPU_SEARCHER.is_file(),
-                "searcher_paths": {"cuda": str(SEARCHER), "cpu": str(CPU_SEARCHER)},
+                "mlx_searcher_built": MLX_SEARCHER.is_file(),
+                "searcher_paths": {backend: str(searcher_path(backend)) for backend in HOST_BACKENDS},
                 "sweep": sweep_state,
                 "tasks": tasks,
             })
         if p in ("/api/sweep/log", "/api/candidates"):
             backend = (parse_qs(u.query).get("backend") or [SWEEP.get("backend", "cuda")])[0]
-            if backend not in ("cpu", "cuda", "webgpu"):
+            if backend not in (*HOST_BACKENDS, "webgpu"):
                 return self._send(400, {"error": "未知搜索后端."})
         if p in ("/api/sweep/log", "/api/candidates"):
             try:
@@ -446,9 +457,9 @@ class Handler(BaseHTTPRequestHandler):
                 if not (DATA / "observed.txt").is_file():
                     return self._send(400, {"ok": False, "error": "还没有标注, 先完成标注"})
                 backend = body.get("backend", "cuda")
-                if backend not in ("cpu", "cuda"):
-                    return self._send(400, {"ok": False, "error": "主机搜索仅支持 cpu 或 cuda 后端."})
-                searcher = CPU_SEARCHER if backend == "cpu" else SEARCHER
+                if backend not in HOST_BACKENDS:
+                    return self._send(400, {"ok": False, "error": "主机搜索仅支持 cpu, cuda 或 mlx 后端."})
+                searcher = searcher_path(backend)
                 if not searcher.is_file():
                     return self._send(400, {"ok": False, "error": f"搜索器未编译: {searcher}"})
                 cmd = sweep_command(body)

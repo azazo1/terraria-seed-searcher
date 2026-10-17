@@ -56,7 +56,7 @@
           <p id="progress-note" class="hint"></p>
         </div>
         <div class="panel stack"><h2>粗筛设置</h2>
-          <label class="field">计算方式<select id="search-backend"><option value="webgpu">浏览器 GPU (WebGPU)</option><option value="cpu">主机 CPU</option><option value="cuda">主机 NVIDIA GPU (CUDA)</option></select></label>
+          <label class="field">计算方式<select id="search-backend"><option value="webgpu">浏览器 GPU (WebGPU)</option><option value="cpu">主机 CPU</option><option value="cuda">主机 NVIDIA GPU (CUDA)</option><option value="mlx">主机 Apple GPU (MLX/Metal)</option></select></label>
           <p id="gpu-support" class="hint"></p><p class="hint">浏览器 WebGPU 支持 6400 x 1800 中世界和最多 700 个观测列, 每次先校验设备结果再分批搜索. CPU 和 CUDA 在运行工作台服务的主机上计算. 请保持页面打开以继续 WebGPU 计算; 已提交的断点和候选保存在服务端, 刷新后可以继续任务.</p>
           <div class="fields"><label class="field">容差<input type="number" id="tol" value="0.5" step="any" min="0.01" max="10"></label><label class="field">最低得分<input type="number" id="offer" value="0.55" step="any" min="0" max="1"></label></div>
           <details id="search-advanced"><summary>高级参数 (含出生点范围)</summary><div class="fields">

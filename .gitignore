@@ -5,6 +5,7 @@ build/
 sweep
 sweep2
 sweep-cpu
+sweep-mlx
 sweep2_large
 sweep2_small
 
@@ -24,6 +25,8 @@ data/observed.txt
 data/observed_meta.json
 data/shapes.json
 data/candidates.txt
+# 命令行直接运行时搜索器写在当前目录的候选快照
+/candidates_*.txt
 data/_old/
 __pycache__/
 *.pyc
