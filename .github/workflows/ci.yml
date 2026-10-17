@@ -149,7 +149,7 @@ jobs:
             cuda_dir: 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8'
             cuda_bin: 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8\bin'
             cuda_method: local
-            cuda_packages: '["nvcc","cudart","crt"]'
+            cuda_packages: '[]'
           - os: ubuntu-24.04
             platform: linux
             arch: x86_64
