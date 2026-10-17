@@ -4,6 +4,7 @@ build/
 *.exe
 sweep
 sweep2
+sweep-cpu
 sweep2_large
 sweep2_small
 

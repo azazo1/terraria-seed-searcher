@@ -17,7 +17,12 @@
 #include <cmath>
 #include <vector>
 #include <algorithm>
+#ifndef TERRARIA_HOST_ONLY
 #include <cuda_runtime.h>
+#else
+#define __device__
+#define __host__
+#endif
 
 /* 世界尺寸. 默认中世界; 用 -DWORLD_LARGE / -DWORLD_SMALL 编译出对应尺寸的版本 */
 #if defined(WORLD_LARGE)
@@ -282,6 +287,39 @@ __device__ __host__ static double stream_score(RNG *rp, int seed, int left, int 
  * 这样模拟只做一次, 且 B 的并行度是 种子数 x 243。
  */
 
+/* 主机 CPU 与 CUDA 共用逐列生成逻辑, 保持随机数消费顺序一致. */
+__device__ __host__ static void generate_profile(RNG *rp, int seed, int cols, int w0, int w1, int *dst) {
+    int right;
+    int left = setup_beach(rp, seed, W_MEDIUM, &right);
+    rng_seed(rp, seed);
+    double surface = (double)H_MEDIUM * 0.3;
+    surface *= (double)rng_next2(rp, 90, 110) * 0.005;
+    double rock = surface + (double)H_MEDIUM * 0.2;
+    rock *= (double)rng_next2(rp, 90, 110) * 0.01;
+    int remaining = left + 5, feature = 0;
+    for (int x = 0; x < cols; x++) {
+        if (remaining <= 0) {
+            feature = rng_next2(rp, 0, 5);
+            remaining = rng_next2(rp, 5, 40);
+            if (feature == 0) remaining *= (int)((double)rng_next2(rp, 5, 30) * 0.2);
+        }
+        remaining--;
+        if ((double)x > (double)W_MEDIUM * 0.45 && (double)x < (double)W_MEDIUM * 0.55 && (feature == 3 || feature == 4)) feature = rng_next(rp, 3);
+        if ((double)x > (double)W_MEDIUM * 0.48 && (double)x < (double)W_MEDIUM * 0.52) feature = 0;
+        surface += surface_offset(rp, feature);
+        if (x < left + 5 || x > right - 5) {
+            if (surface < (double)H_MEDIUM * 0.17) surface = (double)H_MEDIUM * 0.17;
+            else if (surface > (double)H_MEDIUM * 0.23) surface = (double)H_MEDIUM * 0.23;
+        } else if (surface < (double)H_MEDIUM * 0.17) { surface = (double)H_MEDIUM * 0.17; remaining = 0; }
+        else if (surface > (double)H_MEDIUM * 0.26) { surface = (double)H_MEDIUM * 0.26; remaining = 0; }
+        while (rng_next(rp, 3) == 0) rock += (double)rng_next2(rp, -2, 3);
+        if (rock < surface + (double)H_MEDIUM * 0.06) rock += 1.0;
+        if (rock > surface + (double)H_MEDIUM * 0.35) rock -= 1.0;
+        if (x >= w0 && x < w1) dst[x - w0] = (int)(surface * 8.0);
+    }
+}
+
+#ifndef TERRARIA_HOST_ONLY
 struct Args2 {
     const int *obs8;          /* 观测高度, 单位 1/8 格 */
     const unsigned char *valid;
@@ -310,44 +348,7 @@ __global__ void profile_kernel(Args2 a) {
     int stride = gridDim.x * blockDim.x;
     for (int idx = blockIdx.x * blockDim.x + threadIdx.x; idx < nthis; idx += stride) {
         int seed = a.seed_from + idx;
-        int right;
-        int left = setup_beach(&rng, seed, W_MEDIUM, &right);
-
-        /* 下面是 TerrainPass 的逐列模拟, 与 stream_score 中完全一致 */
-        rng_seed(&rng, seed);
-        double num2 = (double)H_MEDIUM * 0.3;
-        num2 *= (double)rng_next2(&rng, 90, 110) * 0.005;
-        double num3 = num2 + (double)H_MEDIUM * 0.2;
-        num3 *= (double)rng_next2(&rng, 90, 110) * 0.01;
-        double num8 = (double)H_MEDIUM * 0.23;
-        int num9 = left + 5;
-        int feature = 0;
-        int *dst = a.prof + (long long)idx * W;
-        for (int i = 0; i < a.cols; i++) {
-            if (num9 <= 0) {
-                feature = rng_next2(&rng, 0, 5);
-                num9 = rng_next2(&rng, 5, 40);
-                if (feature == 0) num9 *= (int)((double)rng_next2(&rng, 5, 30) * 0.2);
-            }
-            num9--;
-            if ((double)i > (double)W_MEDIUM * 0.45 && (double)i < (double)W_MEDIUM * 0.55 && (feature == 3 || feature == 4))
-                feature = rng_next(&rng, 3);
-            if ((double)i > (double)W_MEDIUM * 0.48 && (double)i < (double)W_MEDIUM * 0.52) feature = 0;
-            num2 += surface_offset(&rng, feature);
-            double num10 = 0.17, num11 = 0.26;
-            if (i < left + 5 || i > right - 5) {
-                if (num2 < (double)H_MEDIUM * num10) num2 = (double)H_MEDIUM * num10;
-                else if (num2 > num8) num2 = num8;
-            } else if (num2 < (double)H_MEDIUM * num10) {
-                num2 = (double)H_MEDIUM * num10; num9 = 0;
-            } else if (num2 > (double)H_MEDIUM * num11) {
-                num2 = (double)H_MEDIUM * num11; num9 = 0;
-            }
-            while (rng_next(&rng, 3) == 0) num3 += (double)rng_next2(&rng, -2, 3);
-            if (num3 < num2 + (double)H_MEDIUM * 0.06) num3 += 1.0;
-            if (num3 > num2 + (double)H_MEDIUM * 0.35) num3 -= 1.0;
-            if (i >= a.w0 && i < a.w1) dst[i - a.w0] = (int)(num2 * 8.0);
-        }
+        generate_profile(&rng, seed, a.cols, a.w0, a.w1, a.prof + (long long)idx * W);
     }
 }
 
@@ -385,11 +386,10 @@ __global__ void score_kernel(Args2 a) {
          * 取最大箱 (众数) 会让选出的候选与复核口径完全不同。 */
         int half = cnt / 2, acc = 0, med = 16;
         for (int k = 0; k < 33; k++) { acc += hist[k]; if (acc >= half) { med = k; break; } }
-        /* 命中 = 中位偏移 +-0.5 格 (本内核的箱宽是 1/8 格, 即 +-4 箱), 与 --tol 0.5 同义 */
-        int hit = 0;
-        for (int k = med - 4; k <= med + 4; k++) if (k >= 0 && k < 33) hit += hist[k];
-        float sc = (float)hit / (float)cnt;
-        unsigned qq = (unsigned)(sc * 10000000.0f);
+        /* 用相同的 1/8 格观测单位解释容差, 与 CPU 和 WebGPU 一致. */
+        int hit = 0, radius = (int)(a.tol * 8.0 + 1e-6);
+        for (int k = med - radius; k <= med + radius; k++) if (k >= 0 && k < 33) hit += hist[k];
+        unsigned qq = (unsigned)((unsigned long long)hit * 10000000ull / (unsigned)cnt);
         unsigned long long packed = ((unsigned long long)qq << 32) | (unsigned long long)(unsigned)q;
         atomicMax(&a.best[idx], packed);
     }
@@ -594,3 +594,4 @@ int main(int argc, char **argv) {
     }
     return 0;
 }
+#endif // TERRARIA_HOST_ONLY

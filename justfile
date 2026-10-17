@@ -17,6 +17,10 @@ web:
 build:
     nvcc -O3 -arch=sm_89 -o sweep2 src/cuda/sweep2.cu -lm
 
+# 编译主机多线程 CPU 搜索器, 无需 CUDA
+build-cpu:
+    c++ -O3 -std=c++17 -pthread -ffp-contract=off -o sweep-cpu src/cpu/search.cpp
+
 # just check
 # 快速自检: 控制台能否正常读状态 (不需要 GPU)
 check:

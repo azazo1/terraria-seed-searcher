@@ -7,6 +7,25 @@ import { canvasPoint, findFrame, frameGrid, frameSize, gridGap, imagePoint } fro
 import { applyMeasurement, guideFor, measureGrid, nearestGridLine, selectedGridPair } from '../web/grid-model.js';
 import { migrateParam, PARAM_VERSION } from '../web/frame-schema.js';
 import { DEFAULT_SEARCH_PARAMETERS, normalizeSearchParameters } from '../web/search-parameters.js';
+import { prepareSearch, scoreProfile, terrainProfile } from '../web/gpu/terrain-reference.js';
+import { SearchSession } from '../web/gpu/search-session.js';
+
+test('浏览器搜索限制中世界和观测长度, 正确匹配合成地形且忽略缺失列', () => {
+  const profile = terrainProfile(42, 3400), obs = { heights: Array.from(profile.slice(3100, 3196), (v, i) => i % 7 === 0 ? -999 : (v - profile[3100]) / 8 + 30), marker: 100 };
+  const settings = { ...DEFAULT_SEARCH_PARAMETERS, range: [40, 45], spawn_lo: 3198, spawn_hi: 3202, scales: '.97,1.00,1.03' };
+  const match = scoreProfile(profile, obs, settings); assert.equal(match.quantized, 10000000); assert.equal(match.spawn, 3200); assert.equal(match.scale, 1);
+  for (const observation of [{ ...obs, heights: [] }, { ...obs, heights: Array(701).fill(0) }, { ...obs, heights: Array(30).fill(-999) }, { ...obs, heights: [...obs.heights, NaN] }, { ...obs, marker: -1 }]) assert.throws(() => prepareSearch(observation, settings));
+  assert.throws(() => prepareSearch(obs, { ...settings, cols: 8400 }));
+});
+
+test('浏览器搜索会话保留候选, 报告进度并在失败或停止后释放设备', async () => {
+  const obs = { heights: Array(30).fill(0), marker: 10 }, settings = { ...DEFAULT_SEARCH_PARAMETERS, range: [40, 45] }; let destroyed = 0, changed = 0;
+  const fake = { cancelled: false, adapterInfo: 'test GPU', initialize: async () => {}, selfTest: async () => ({ seeds: 12, columns: 76800 }), run: async (_obs, _parameters, progress) => { progress({ next: 45, scanned: 5, total: 5, elapsed: .1, candidates: [{ seed: 44, score: .6, spawn: 3200, scale: 1 }, { seed: 42, score: 1, spawn: 3200, scale: 1 }] }); return { next: 45, scanned: 5, cancelled: false }; }, stop() { this.cancelled = true; }, destroy() { destroyed++; } };
+  const session = new SearchSession(() => changed++, () => fake); await session.start(obs, settings);
+  assert.equal(session.running, false); assert.equal(destroyed, 1); assert.ok(changed > 2); assert.equal(session.rows[0].seed, 42); assert.equal(session.summary.next, 45); assert.equal(session.lines().length, 2);
+  fake.selfTest = async () => { throw new Error('probe failed'); }; await assert.rejects(session.start(obs, settings), /probe failed/); assert.equal(session.running, false); assert.equal(destroyed, 2); assert.equal(session.rows.length, 0);
+  fake.selfTest = async () => { session.stop(); return null; }; await session.start(obs, settings); assert.equal(destroyed, 3); assert.equal(session.running, false);
+});
 
 test('粗筛设置保留数值校验, 拒绝错误类型和范围', () => {
   const parameters = { ...DEFAULT_SEARCH_PARAMETERS, tol: .3, offer: .7, range: [100, 200], spawn_lo: 3100, spawn_hi: 3250, cols: 4000, scales: '0.97,1.00,1.03', batch: 12345, device: 2 };

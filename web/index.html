@@ -37,12 +37,15 @@
           <p id="observation-status" class="hint" role="status" aria-live="polite"></p><p class="hint">文件仅包含以格为单位的逐列高度 (缺失或作废列为 -999) 和出生点观测列号. 不包含截图, 标定, 拼接, 画布标记或搜索设置. 后续保存人工标注会重新生成观测.</p>
         </div>
         <div class="panel stack"><h2>粗筛设置</h2>
+          <label class="field">计算方式<select id="search-backend"><option value="webgpu">浏览器 GPU (WebGPU)</option><option value="cpu">主机 CPU</option><option value="cuda">主机 NVIDIA GPU (CUDA)</option></select></label>
+          <p id="gpu-support" class="hint"></p><p class="hint">浏览器 WebGPU 支持 6400 x 1800 中世界和最多 700 个观测列, 每次先校验设备结果再分批搜索. CPU 和 CUDA 在运行工作台服务的主机上计算. 请保持页面打开; 大范围搜索可能耗时很长. 浏览器候选暂存于本页, 刷新前请下载.</p>
+          <progress id="gpu-progress" max="1" value="0" hidden aria-label="浏览器搜索进度"></progress><p id="gpu-progress-detail" class="hint" role="status" aria-live="polite"></p>
           <div class="fields"><label class="field">容差<input type="number" id="tol" value="0.5" step="any" min="0.01" max="10"></label><label class="field">最低得分<input type="number" id="offer" value="0.55" step="any" min="0" max="1"></label></div>
           <details id="search-advanced"><summary>高级参数 (含出生点范围)</summary><div class="fields">
             <label class="field">种子起始值 (包含)<input type="number" id="seed-from" min="0" max="2147483646" step="1" value="0"></label><label class="field">种子结束值 (不含)<input type="number" id="seed-to" min="1" max="2147483647" step="1" value="2147483647"></label>
             <label class="field">出生点世界列下限<input type="number" id="spawn-lo" min="0" max="8399" step="1" value="3180"></label><label class="field">出生点世界列上限<input type="number" id="spawn-hi" min="0" max="8399" step="1" value="3220"></label>
             <label class="field">模拟列数<input type="number" id="search-cols" min="1" max="8400" step="1" value="3400"></label><label class="field">搜索尺度 (英文逗号分隔)<input type="text" id="search-scales" value="1.00"></label>
-            <label class="field">批大小<input type="number" id="search-batch" min="1" max="2147483647" step="1" value="400000"></label><label class="field">GPU 编号<input type="number" id="search-device" min="0" max="1024" step="1" value="0"></label>
+            <label class="field">批大小<input type="number" id="search-batch" min="1" max="2147483647" step="1" value="400000"></label><label class="field">GPU 编号 (仅 CUDA)<input type="number" id="search-device" min="0" max="1024" step="1" value="0"></label>
           </div><p class="hint">默认参数与此前搜索一致. 搜索尺度调整粗筛的列间距, 不是图片缩放. 出生点观测列来自最终观测数据.</p></details>
           <p class="hint">调低最低得分会保留更多候选.</p>
           <div class="actions"><button id="start" class="primary" disabled>开始搜索</button><button id="stop" disabled>停止搜索</button><button id="go-candidates">查看候选 →</button></div>
@@ -50,7 +53,7 @@
         <div class="panel stack"><h2>运行输出</h2><pre id="log">搜索尚未启动.</pre></div>
       </div>
     </section>
-    <section id="pane-candidates" role="tabpanel" aria-labelledby="tab-candidates" class="app-pane scroll-pane" hidden><div class="content-stack"><div class="panel stack"><div class="section-title"><h2>候选结果</h2><button id="refresh-candidates">刷新候选</button></div><p id="candidate-hint" class="hint">搜索结束后, 候选会列在这里.</p><div class="table-wrap"><table><thead><tr><th>排名</th><th>候选记录</th></tr></thead><tbody id="candidates"></tbody></table></div></div></div></section>
+    <section id="pane-candidates" role="tabpanel" aria-labelledby="tab-candidates" class="app-pane scroll-pane" hidden><div class="content-stack"><div class="panel stack"><div class="section-title"><h2>候选结果</h2><button id="refresh-candidates">刷新候选</button><button id="download-browser-candidates" disabled>下载浏览器候选</button></div><p id="candidate-hint" class="hint">搜索结束后, 候选会列在这里.</p><div class="table-wrap"><table><thead><tr><th>排名</th><th>候选记录</th></tr></thead><tbody id="candidates"></tbody></table></div></div></div></section>
   </div>
 </main>
 <script type="module" src="/web/app.js"></script>

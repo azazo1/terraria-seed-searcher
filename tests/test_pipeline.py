@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 from urllib.error import HTTPError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
@@ -154,6 +154,30 @@ class PipelineTest(unittest.TestCase):
             start = command.index(flag) + 1
             self.assertEqual(command[start:start + len(values)], values)
 
+    def test_host_cpu_starts_a_server_process_and_uses_cpu_results(self):
+        self.call("/api/marks", {"version": 2, "tile": 20, "marker": 7, "cols": [{"c": i, "y": i * 20, "t": "block"} for i in range(30)]})
+        executable = serve.WORK / "cpu-executable-fixture"
+        executable.write_bytes(b"fixture")
+        proc = Mock()
+        proc.poll.return_value = None
+        with patch.object(serve, "CPU_SEARCHER", executable), patch.dict(serve.SWEEP, {"proc": None, "backend": "cuda"}), patch.object(serve.subprocess, "Popen", return_value=proc) as spawn:
+            self.call("/api/sweep", {"backend": "cpu", "range": [40, 45]})
+            self.assertEqual(spawn.call_args.args[0][0], str(executable))
+            self.assertEqual(spawn.call_args.kwargs["cwd"], str(serve.WORK))
+            _, state = self.call("/api/state")
+            self.assertTrue(json.loads(state)["cpu_searcher_built"])
+            self.assertEqual(json.loads(state)["sweep"]["backend"], "cpu")
+            self.call("/api/sweep/stop", {})
+            proc.terminate.assert_called_once()
+            (serve.WORK / "candidates_cpu.txt").write_text("seed=42 spawn_x=3200 scale=1 score=1\n")
+            _, rows = self.call("/api/candidates")
+            self.assertEqual(json.loads(rows)["rows"], ["seed=42 spawn_x=3200 scale=1 score=1"])
+            (serve.WORK / "candidates_gpu2.txt").write_text("seed=99 spawn_x=3201 scale=1 score=0.7\n")
+            _, rows = self.call("/api/candidates?backend=cuda")
+            self.assertEqual(json.loads(rows)["rows"], ["seed=99 spawn_x=3201 scale=1 score=0.7"])
+            _, rows = self.call("/api/candidates?backend=cpu")
+            self.assertEqual(json.loads(rows)["rows"], ["seed=42 spawn_x=3200 scale=1 score=1"])
+
     def test_search_result_is_read_from_searcher_output(self):
         output = serve.WORK / "candidates_gpu2.txt"
         output.write_text("seed=fixture spawn_x=3200 scale=1.00 score=0.9000\n", encoding="utf-8")
@@ -173,7 +197,7 @@ class PipelineTest(unittest.TestCase):
                 self.assertTrue(response.url.endswith(path))
 
     def test_new_assets_and_traversal_boundary(self):
-        for path in ("/", "/web/ui.css", "/web/grid.css", "/web/grid.js", "/web/grid-model.js", "/web/frame-schema.js", "/web/frame-geometry.js", "/web/editor-core.js", "/web/calib.js", "/web/mark.js", "/web/observation.js", "/web/app.js", "/web/search-parameters.js", "/web/search-controls.js", "/web/observation-transfer.js"):
+        for path in ("/", "/web/ui.css", "/web/grid.css", "/web/grid.js", "/web/grid-model.js", "/web/frame-schema.js", "/web/frame-geometry.js", "/web/editor-core.js", "/web/calib.js", "/web/mark.js", "/web/observation.js", "/web/app.js", "/web/search-parameters.js", "/web/search-controls.js", "/web/observation-transfer.js", "/web/gpu/search-engine.js", "/web/gpu/terrain-reference.js", "/web/gpu/search-session.js", "/web/gpu/search.wgsl"):
             with self.subTest(path=path):
                 code, body = self.call(path)
                 self.assertEqual(code, 200)

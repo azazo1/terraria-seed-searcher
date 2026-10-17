@@ -36,6 +36,7 @@ FRAMES = ROOT / "frames"
 DATA = ROOT / "data"
 WORK = ROOT / "workdir"
 SEARCHER = ROOT / ("sweep2.exe" if os.name == "nt" else "sweep2")
+CPU_SEARCHER = ROOT / ("sweep-cpu.exe" if os.name == "nt" else "sweep-cpu")
 DEFAULT_SEED_RANGE = (0, 2147483647)
 
 STATE_LOCK = threading.Lock()
@@ -64,9 +65,10 @@ def write_json(path, obj):
         temporary.replace(target)
 
 
-def candidates_path():
-    generated = WORK / "candidates_gpu2.txt"
-    return generated if generated.is_file() else DATA / "candidates.txt"
+def candidates_path(backend=None):
+    backend = backend or SWEEP.get("backend", "cuda")
+    generated = WORK / ("candidates_cpu.txt" if backend == "cpu" else "candidates_gpu2.txt")
+    return generated if backend == "cpu" or generated.is_file() else DATA / "candidates.txt"
 
 
 def load_marks():
@@ -164,7 +166,7 @@ def sweep_command(params):
     spawn_hi = int(params.get("spawn_hi", 3220))
     lo, hi = params.get("range", list(DEFAULT_SEED_RANGE))
     return [
-        str(SEARCHER), str(DATA / "observed.txt"),
+        str(CPU_SEARCHER if params.get("backend") == "cpu" else SEARCHER), str(DATA / "observed.txt"),
         "--range", str(lo), str(hi),
         "--tol", str(params.get("tol", 0.5)),
         "--offer", str(params.get("offer", 0.55)),
@@ -264,22 +266,29 @@ class Handler(BaseHTTPRequestHandler):
                 running = SWEEP["proc"] is not None and SWEEP["proc"].poll() is None
                 elapsed = time.time() - SWEEP["started"] if SWEEP["started"] else 0
             cands = candidates_path()
+            candidate_bytes = {backend: path.stat().st_size if path.is_file() else 0 for backend in ("cpu", "cuda") for path in (candidates_path(backend),)}
             return self._send(200, {
                 "frames": [f.name for f in sorted(FRAMES.glob("*")) if f.is_file()],
                 "param": param,
                 "marks": {"columns": len(mark.get("cols", [])), "trees": len(mark.get("trees", []))},
                 "observed": observed,
                 "searcher_built": SEARCHER.is_file(),
-                "sweep": {"running": running, "elapsed": round(elapsed, 1),
+                "cpu_searcher_built": CPU_SEARCHER.is_file(),
+                "sweep": {"running": running, "backend": SWEEP.get("backend", "cuda"), "candidate_bytes": candidate_bytes, "elapsed": round(elapsed, 1),
                           "candidates": cands.stat().st_size if cands.is_file() else 0},
             })
+        if p in ("/api/sweep/log", "/api/candidates"):
+            backend = (parse_qs(u.query).get("backend") or [SWEEP.get("backend", "cuda")])[0]
+            if backend not in ("cpu", "cuda"):
+                return self._send(400, {"error": "未知主机搜索后端."})
         if p == "/api/sweep/log":
             with STATE_LOCK:
-                log = SWEEP["log"] or (WORK / "sweep.log")
+                log = SWEEP["log"] if backend == SWEEP.get("backend", "cuda") else None
+                log = log or (WORK / f"sweep-{backend}.log")
             txt = Path(log).read_text(encoding="utf-8", errors="replace") if Path(log).is_file() else ""
             return self._send(200, {"log": "\n".join(txt.splitlines()[-60:])})
         if p == "/api/candidates":
-            f = candidates_path()
+            f = candidates_path(backend)
             if not f.is_file():
                 return self._send(200, {"rows": []})
             rows = []
@@ -348,12 +357,17 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(409, {"ok": False, "error": "已有搜索在跑"})
                 if not (DATA / "observed.txt").is_file():
                     return self._send(400, {"ok": False, "error": "还没有标注, 先完成标注"})
-                if not SEARCHER.is_file():
-                    return self._send(400, {"ok": False, "error": f"搜索器未编译: {SEARCHER}"})
+                backend = body.get("backend", "cuda")
+                if backend not in ("cpu", "cuda"):
+                    return self._send(400, {"ok": False, "error": "主机搜索仅支持 cpu 或 cuda 后端."})
+                searcher = CPU_SEARCHER if backend == "cpu" else SEARCHER
+                if not searcher.is_file():
+                    return self._send(400, {"ok": False, "error": f"搜索器未编译: {searcher}"})
                 cmd = sweep_command(body)
-                log = WORK / "sweep.log"
-                fh = open(log, "wb")
-                SWEEP["proc"] = subprocess.Popen(cmd, cwd=str(WORK), stdout=fh, stderr=subprocess.STDOUT)
+                log = WORK / f"sweep-{backend}.log"
+                with open(log, "wb") as fh:
+                    SWEEP["proc"] = subprocess.Popen(cmd, cwd=str(WORK), stdout=fh, stderr=subprocess.STDOUT)
+                SWEEP["backend"] = backend
                 SWEEP["started"] = time.time()
                 SWEEP["log"] = log
             return self._send(200, {"ok": True, "cmd": " ".join(cmd), "log": str(log)})

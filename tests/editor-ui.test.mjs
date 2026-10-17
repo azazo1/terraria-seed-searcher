@@ -63,7 +63,7 @@ function environment(html, store) {
       return { ok: true, json: async () => ({ ok: true, observed: data.cols?.length ? { valid: data.cols.length, step_rate: 10 } : null }) };
     }
     if (store.readFailure?.url === url) return { ok: false, status: store.readFailure.status, json: async () => ({ error: store.readFailure.error }) };
-    const data = url === '/api/state' ? { frames: store.names, param: store.param, marks: { columns: store.marks?.cols?.length || 0 }, observed: store.observed || null, searcher_built: !!store.searcher_built, sweep: { running: !!store.running, candidates: 0 } } : url === '/api/observation' ? store.observation : url === '/api/sweep/log' ? { log: '' } : url === '/api/candidates' ? { rows: [] } : url === '/frames' ? store.names : url === '/data/param.json' ? store.param : url === '/data/marks.json' ? store.marks : null;
+    const data = url === '/api/state' ? { frames: store.names, param: store.param, marks: { columns: store.marks?.cols?.length || 0 }, observed: store.observed || null, searcher_built: !!store.searcher_built, cpu_searcher_built: !!store.cpu_searcher_built, sweep: { running: !!store.running, candidates: 0 } } : url === '/api/observation' ? store.observation : url.startsWith('/api/sweep/log') ? { log: '' } : url.startsWith('/api/candidates') ? { rows: [] } : url === '/frames' ? store.names : url === '/data/param.json' ? store.param : url === '/data/marks.json' ? store.marks : null;
     return { ok: !!data, status: data ? 200 : 404, json: async () => structuredClone(data || { error: 'not found: ' + url.split('/').pop() }) };
   };
   const names = ['document', 'Image', 'fetch', 'window', 'parent', 'location', 'ResizeObserver', 'devicePixelRatio', 'requestAnimationFrame', 'addEventListener', 'confirm', 'history', 'setInterval'];
@@ -410,7 +410,7 @@ test('最终观测可无截图导入导出, 不改变画布或搜索设置, 仅�
     await import('../web/app.js?ui-final-observation');
     const get = id => env.ids.get(id), file = get('observation-file');
     const upload = async text => { file.files = [{ size: new Blob([text]).size, text: async () => text }]; await file.fire('change'); };
-    const observation = { format: 'terraria-seed-searcher/observation', version: 1, heights: [0, -999, .125, 2.375], marker: 2 };
+    const observation = { format: 'terraria-seed-searcher/observation', version: 1, heights: [0, -999, .125, 2.375, ...Array.from({ length: 20 }, (_, i) => i)], marker: 2 };
     assert.equal(get('export-observation').disabled, true); get('tol').value = '0.35';
     await upload('\uFEFF' + JSON.stringify(observation)); assert.equal(file.value, '');
     assert.deepEqual(store.observation, observation); assert.deepEqual(store.marks, originalMarks); assert.equal(store.param, undefined); assert.equal(get('tol').value, '0.35');
@@ -443,6 +443,19 @@ test('导入最终观测前等待旧编辑器保存, 后续进入搜索不会用
     assert.deepEqual(store.observation, observation); assert.equal(store.observed.source, 'import');
     await get('tabs').fire('click', { target: { closest: () => get('tab-search') } }); await settle();
     assert.equal(get('tab-search').getAttribute('aria-selected'), 'true'); assert.equal(markCreated, 0); assert.equal(store.observed.marker, 2);
+  } finally { env.restore(); }
+});
+
+test('计算后端可手动选择主机 CPU 或 CUDA, CPU 请求主机接口且按编译状态启用', async () => {
+  const store = { names: [], observed: { valid: 30, columns: 30, marker: 2, source: 'import' }, searcher_built: false, cpu_searcher_built: true };
+  const env = environment(await readFile(new URL('../web/index.html', import.meta.url), 'utf8'), store);
+  try {
+    await import('../web/app.js?ui-host-cpu-choice'); const get = id => env.ids.get(id), backend = get('search-backend');
+    backend.value = 'cuda'; await backend.fire('change'); assert.equal(get('start').disabled, true);
+    backend.value = 'cpu'; await backend.fire('change'); assert.equal(get('start').disabled, false);
+    await get('start').click(); const starts = env.post.filter(row => row.url === '/api/sweep'); assert.equal(starts.length, 1); assert.equal(starts[0].data.backend, 'cpu'); assert.equal(starts[0].data.tol, .5);
+    backend.value = 'webgpu'; await backend.fire('change'); assert.equal(get('start').disabled, true);
+    assert.equal(env.elements.some(element => element.tagName === 'IFRAME'), false);
   } finally { env.restore(); }
 });
 
