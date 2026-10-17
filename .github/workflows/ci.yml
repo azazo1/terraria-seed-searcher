@@ -196,7 +196,7 @@ jobs:
       - name: 恢复 CUDA Toolkit 缓存
         if: matrix.cuda
         id: cuda-cache
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
         with:
           path: ${{ matrix.cuda_dir }}
           key: cuda-12.8.1-${{ runner.os }}-sub-v1
@@ -209,6 +209,13 @@ jobs:
           method: ${{ matrix.cuda_method }}
           sub-packages: ${{ matrix.cuda_packages }}
           log-file-suffix: ${{ matrix.os }}.txt
+
+      - name: 保存 CUDA Toolkit 缓存
+        if: matrix.cuda && steps.cuda-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ matrix.cuda_dir }}
+          key: cuda-12.8.1-${{ runner.os }}-sub-v1
 
       - name: 配置缓存的 CUDA
         if: matrix.cuda && steps.cuda-cache.outputs.cache-hit == 'true'
