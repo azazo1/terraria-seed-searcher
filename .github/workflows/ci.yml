@@ -142,14 +142,20 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: windows-2025
+          - os: windows-2022
             platform: windows
             arch: x86_64
             cuda: true
+            cuda_dir: 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8'
+            cuda_bin: 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8\bin'
+            cuda_packages: '["nvcc","cudart","crt"]'
           - os: ubuntu-24.04
             platform: linux
             arch: x86_64
             cuda: true
+            cuda_dir: /usr/local/cuda-12.8
+            cuda_bin: /usr/local/cuda-12.8/bin
+            cuda_packages: '["nvcc","cudart","cudart-dev","crt"]'
           - os: macos-15-intel
             platform: macos
             arch: x86_64
@@ -178,13 +184,41 @@ jobs:
         with:
           enable-cache: false
 
-      - name: 安装 CUDA Toolkit
+      - name: 准备 CUDA 缓存目录
+        if: matrix.cuda && matrix.platform == 'linux' && (needs.version.outputs.is_release == 'true' || github.event_name == 'workflow_dispatch')
+        shell: bash
+        run: |
+          sudo mkdir -p "${{ matrix.cuda_dir }}"
+          sudo chown -R "$USER" "${{ matrix.cuda_dir }}"
+
+      - name: 恢复 CUDA Toolkit 缓存
         if: matrix.cuda && (needs.version.outputs.is_release == 'true' || github.event_name == 'workflow_dispatch')
+        id: cuda-cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ matrix.cuda_dir }}
+          key: cuda-12.8.1-${{ runner.os }}-sub-v1
+
+      - name: 安装 CUDA Toolkit
+        if: matrix.cuda && (needs.version.outputs.is_release == 'true' || github.event_name == 'workflow_dispatch') && steps.cuda-cache.outputs.cache-hit != 'true'
         uses: Jimver/cuda-toolkit@v0.2.36
         with:
           cuda: "12.8.1"
-          method: "local"
+          method: "network"
+          sub-packages: ${{ matrix.cuda_packages }}
           log-file-suffix: ${{ matrix.os }}.txt
+
+      - name: 配置缓存的 CUDA
+        if: matrix.cuda && (needs.version.outputs.is_release == 'true' || github.event_name == 'workflow_dispatch') && steps.cuda-cache.outputs.cache-hit == 'true'
+        shell: bash
+        run: |
+          printf 'CUDA_PATH=%s\n' "${{ matrix.cuda_dir }}" >> "$GITHUB_ENV"
+          printf '%s\n' "${{ matrix.cuda_bin }}" >> "$GITHUB_PATH"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            "${{ matrix.cuda_bin }}/nvcc.exe" --version
+          else
+            "${{ matrix.cuda_bin }}/nvcc" --version
+          fi
 
       - name: 准备 MSVC 环境
         if: matrix.platform == 'windows'

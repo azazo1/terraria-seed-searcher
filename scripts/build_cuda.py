@@ -41,7 +41,7 @@ def compile_cuda(output, platform_name, staging, nvcc):
     main_obj = staging / ("sweep_main" + suffix)
     output = Path(output)
 
-    device_args = [nvcc, "-O3", "-std=c++17", "-fmad=false", "-c", "src/cuda/sweep.cu", "-o", str(device_obj)]
+    device_args = [nvcc, "-O3", "-std=c++17", "-fmad=false", "-t", "0", "-c", "src/cuda/sweep.cu", "-o", str(device_obj)]
     for arch in architectures(nvcc):
         device_args += ["-gencode", f"arch=compute_{arch},code=sm_{arch}"]
     device_args += ["-gencode", "arch=compute_90,code=compute_90"]
