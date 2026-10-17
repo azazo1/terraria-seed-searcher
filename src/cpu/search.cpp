@@ -39,7 +39,7 @@ int main(int argc, char** argv) {
             for (int v : out) std::cout << v << ' '; std::cout << '\n'; return 0;
         }
         if (argc < 2) throw std::runtime_error("missing observation path");
-        long long from = 0, to = 2147483647; int cols = 3400, marker = 141, low = 3180, high = 3220, threads = std::min(8u, std::max(1u, std::thread::hardware_concurrency())); double tolerance = .5, offer = .55; std::string scale_text = "1.00";
+        long long from = 0, to = 2147483647; int cols = 3400, marker = 141, low = 3180, high = 3220, threads = (int)std::min(64u, std::max(1u, std::thread::hardware_concurrency())); double tolerance = .5, offer = .55; std::string scale_text = "1.00";
         for (int i = 2; i < argc; i++) {
             std::string flag = argv[i]; if (i + 1 >= argc) throw std::runtime_error("missing argument: " + flag);
             if (flag == "--range") { from = std::stoll(argv[++i]); if (i + 1 >= argc) throw std::runtime_error("missing range end"); to = std::stoll(argv[++i]); }

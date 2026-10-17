@@ -83,12 +83,25 @@ __device__ __host__ static inline double rng_sample_d(RNG *r) {
     return (double)rng_sample(r) * 4.656612875245797E-10;
 }
 
+/* Next(max) 的原语义是 (int)(Sample() * max), 而 Sample() 的乘数正好是 1/2147483647
+ * 的双精度表示, 因此它就是 sample * max / 2147483647 向下取整.
+ * 双精度两次舍入的绝对误差不超过 2^-52 * max; 当 max <= 2^20 时该误差 (2.4e-10)
+ * 仍小于任何非整数结果到整数的距离 (至少 1/2147483647), 且 2147483647 是质数不会
+ * 整除 sample * max, 所以整数除法与双精度式逐位等价.
+ * 更大的 max 保留原来的双精度式: 已实测 max = 2147483647 时双精度会少 1. */
+#define RNG_INT_MAX 1048576
+
+__device__ __host__ static inline int rng_scaled(unsigned sample, int delta) {
+    if (delta <= RNG_INT_MAX) return (int)((unsigned long long)sample * (unsigned)delta / 2147483647ull);
+    return (int)((double)sample * 4.656612875245797E-10 * (double)delta);
+}
+
 __device__ __host__ static inline int rng_next(RNG *r, int maxValue) {
-    return (int)(rng_sample_d(r) * (double)maxValue);
+    return rng_scaled((unsigned)rng_sample(r), maxValue);
 }
 
 __device__ __host__ static inline int rng_next2(RNG *r, int minValue, int maxValue) {
-    return (int)(rng_sample_d(r) * (double)((long long)maxValue - minValue)) + minValue;
+    return rng_scaled((unsigned)rng_sample(r), maxValue - minValue) + minValue;
 }
 
 /* ---------------- 初始化段 ---------------- */
@@ -196,14 +209,15 @@ __device__ __host__ static int setup_beach(RNG *rp, int seed, int w, int *out_ri
 
 /* ---------------- TerrainPass ---------------- */
 
-__device__ __host__ static double surface_offset(RNG *r, int feature) {
-    double num = 0.0;
+/* 坡度增量始终是整数, 用 int 累加后一次性并入双精度地表高度, 结果逐位不变. */
+__device__ __host__ static int surface_offset(RNG *r, int feature) {
+    int num = 0;
     switch (feature) {
         case 0: while (rng_next(r, 7) == 0) num += rng_next2(r, -1, 2); break;
-        case 1: while (rng_next(r, 4) == 0) num -= 1.0; while (rng_next(r, 10) == 0) num += 1.0; break;
-        case 2: while (rng_next(r, 4) == 0) num += 1.0; while (rng_next(r, 10) == 0) num -= 1.0; break;
-        case 3: while (rng_next(r, 2) == 0) num -= 1.0; while (rng_next(r, 6) == 0) num += 1.0; break;
-        default: while (rng_next(r, 2) == 0) num += 1.0; while (rng_next(r, 5) == 0) num -= 1.0; break;
+        case 1: while (rng_next(r, 4) == 0) num -= 1; while (rng_next(r, 10) == 0) num += 1; break;
+        case 2: while (rng_next(r, 4) == 0) num += 1; while (rng_next(r, 10) == 0) num -= 1; break;
+        case 3: while (rng_next(r, 2) == 0) num -= 1; while (rng_next(r, 6) == 0) num += 1; break;
+        default: while (rng_next(r, 2) == 0) num += 1; while (rng_next(r, 5) == 0) num -= 1; break;
     }
     return num;
 }
@@ -295,10 +309,13 @@ __device__ __host__ static void generate_profile(RNG *rp, int seed, int cols, in
     rng_seed(rp, seed);
     double surface = (double)H_MEDIUM * 0.3;
     surface *= (double)rng_next2(rp, 90, 110) * 0.005;
-    double rock = surface + (double)H_MEDIUM * 0.2;
-    rock *= (double)rng_next2(rp, 90, 110) * 0.01;
+    /* rock 只参与写入窗口之外的内部状态, 不进入输出. 保留它的随机数消耗,
+     * 去掉不再影响任何分支的累加与钳制, 每列省下若干次双精度运算. */
+    (void)rng_next2(rp, 90, 110);
     int remaining = left + 5, feature = 0;
-    for (int x = 0; x < cols; x++) {
+    /* 窗口右侧之后的地形不会写入输出, 也不会再被读取, 无需继续推进. */
+    int end = w1 < cols ? w1 : cols;
+    for (int x = 0; x < end; x++) {
         if (remaining <= 0) {
             feature = rng_next2(rp, 0, 5);
             remaining = rng_next2(rp, 5, 40);
@@ -313,9 +330,7 @@ __device__ __host__ static void generate_profile(RNG *rp, int seed, int cols, in
             else if (surface > (double)H_MEDIUM * 0.23) surface = (double)H_MEDIUM * 0.23;
         } else if (surface < (double)H_MEDIUM * 0.17) { surface = (double)H_MEDIUM * 0.17; remaining = 0; }
         else if (surface > (double)H_MEDIUM * 0.26) { surface = (double)H_MEDIUM * 0.26; remaining = 0; }
-        while (rng_next(rp, 3) == 0) rock += (double)rng_next2(rp, -2, 3);
-        if (rock < surface + (double)H_MEDIUM * 0.06) rock += 1.0;
-        if (rock > surface + (double)H_MEDIUM * 0.35) rock -= 1.0;
+        while (rng_next(rp, 3) == 0) (void)rng_next2(rp, -2, 3);
         if (x >= w0 && x < w1) dst[x - w0] = (int)(surface * 8.0);
     }
 }
