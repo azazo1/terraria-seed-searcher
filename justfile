@@ -13,11 +13,10 @@ web:
     go run . --root .
 
 # just build
-# Windows 使用 -utf-8, 避免 Git Bash 将 /utf-8 转换成文件路径.
-# 编译 CUDA 搜索器. 需要在带 nvcc 的机器上执行 (本机 macOS 无 CUDA, 会失败).
-# 多卡直接给搜索器传 --device all, 工作台的 GPU 编号填 -1.
+# 编译 CUDA 搜索器, 需要在带 nvcc 的机器上执行.
+# 设备代码由 nvcc 编译, 主机入口由普通 C++ 编译器编译, 输出 sweep / sweep.exe.
 build:
-    nvcc -O3 -arch=sm_89 {{if os() == "windows" { "-Xcompiler=-utf-8 -Xcompiler=-EHsc" } else { "" }}} -o {{if os() == "windows" { "sweep.exe" } else { "sweep" }}} src/cuda/sweep.cu
+    uv run --no-project python scripts/build_cuda.py
 
 # 编译主机多线程 CPU 搜索器, 无需 CUDA
 build-cpu:

@@ -9,9 +9,7 @@
 # 用户只需要 NVIDIA 驱动, 不需要安装 CUDA Toolkit.
 
 import os
-import re
 import shutil
-import sys
 from pathlib import Path
 
 import release_common as rc
@@ -19,11 +17,6 @@ import release_common as rc
 PROJECT_NAME = "terraria-seed-searcher"
 # 仓库还没有版本 tag 时的基础版本号; 首个 tag 之后由 git 提供.
 PACKAGE_VERSION = "0.0.0"
-
-# CUDA 12.8 覆盖 Maxwell 到 Blackwell; CUDA 13 只保留 Turing 及以后.
-CUDA_ARCHS_12 = ["50", "52", "60", "61", "70", "75", "80", "86", "89", "90", "120"]
-CUDA_ARCHS_12_OLD = ["50", "52", "60", "61", "70", "75", "80", "86", "89", "90"]
-CUDA_ARCHS_13 = ["75", "80", "86", "89", "90", "120"]
 
 
 def executable_name(name, platform_name):
@@ -67,36 +60,15 @@ def build_cpu(staging, platform_name):
     return output
 
 
-def cuda_architectures(nvcc):
-    text = rc.run([nvcc, "--version"])
-    match = re.search(r"release (\d+)\.(\d+)", text)
-    if not match:
-        return CUDA_ARCHS_12
-    major, minor = int(match.group(1)), int(match.group(2))
-    if major >= 13:
-        return CUDA_ARCHS_13
-    if (major, minor) >= (12, 8):
-        return CUDA_ARCHS_12
-    return CUDA_ARCHS_12_OLD
-
-
+# CUDA 架构列表在 scripts/build_cuda.py 里按 nvcc 版本选择.
 def build_cuda(staging, platform_name):
     nvcc = shutil.which("nvcc")
     if not nvcc:
         print("未找到 nvcc, 跳过 CUDA 搜索器.")
         return None
+    from build_cuda import compile_cuda
     output = staging / executable_name("sweep", platform_name)
-    arguments = [nvcc, "-O3", "-std=c++17", "-fmad=false", "-cudart", "static"]
-    for arch in cuda_architectures(nvcc):
-        arguments += ["-gencode", f"arch=compute_{arch},code=sm_{arch}"]
-    # 留一份较新的 PTX, 让比本次编译更新的显卡也能 JIT.
-    arguments += ["-gencode", "arch=compute_90,code=compute_90"]
-    if platform_name == "windows":
-        arguments += ["-Xcompiler=-utf-8", "-Xcompiler=-EHsc", "-allow-unsupported-compiler"]
-    else:
-        arguments += ["-Xcompiler=-pthread"]
-    arguments += ["-o", str(output), "src/cuda/sweep.cu"]
-    rc.run(arguments, capture=False)
+    compile_cuda(output, platform_name, staging, nvcc)
     return output
 
 
