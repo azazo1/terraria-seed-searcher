@@ -45,10 +45,16 @@ class SearchBackendsTest(unittest.TestCase):
     def test_cpu_process_stops_and_saves_partial_results(self):
         path = self.scratch / "stop-fixture.txt"
         path.write_text(" ".join(["0"] * 30))
-        proc = subprocess.Popen([str(self.binary), str(path), "--range", "0", "2147483647", "--threads", "2"], cwd=self.scratch, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        proc = subprocess.Popen([str(self.binary), str(path), "--range", "0", "2147483647", "--threads", "2", "--offer", ".01"], cwd=self.scratch, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         try:
             # 首行在信号处理器注册之后输出, 再发送终止请求不会丢掉收尾逻辑.
             self.assertTrue(proc.stdout.readline())
+            self.assertTrue(proc.stdout.readline().startswith("Progress "))
+            self.assertIsNone(proc.poll())
+            live_rows = (self.scratch / "candidates_cpu.txt").read_text().splitlines()
+            self.assertGreater(len(live_rows), 0)
+            scores = [float(dict(field.split("=", 1) for field in row.split())["score"]) for row in live_rows]
+            self.assertEqual(scores, sorted(scores, reverse=True))
             proc.terminate()
             proc.communicate(timeout=5)
             self.assertEqual(proc.returncode, 0)

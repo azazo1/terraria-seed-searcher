@@ -63,7 +63,7 @@ function environment(html, store) {
       return { ok: true, json: async () => ({ ok: true, observed: data.cols?.length ? { valid: data.cols.length, step_rate: 10 } : null }) };
     }
     if (store.readFailure?.url === url) return { ok: false, status: store.readFailure.status, json: async () => ({ error: store.readFailure.error }) };
-    const data = url === '/api/state' ? { frames: store.names, param: store.param, marks: { columns: store.marks?.cols?.length || 0 }, observed: store.observed || null, searcher_built: !!store.searcher_built, cpu_searcher_built: !!store.cpu_searcher_built, searcher_paths: store.searcher_paths, sweep: { running: !!store.running, candidates: 0 } } : url === '/api/observation' ? store.observation : url.startsWith('/api/sweep/log') ? { log: '' } : url.startsWith('/api/candidates') ? { rows: [] } : url === '/frames' ? store.names : url === '/data/param.json' ? store.param : url === '/data/marks.json' ? store.marks : null;
+    const data = url === '/api/state' ? { frames: store.names, param: store.param, marks: { columns: store.marks?.cols?.length || 0 }, observed: store.observed || null, searcher_built: !!store.searcher_built, cpu_searcher_built: !!store.cpu_searcher_built, searcher_paths: store.searcher_paths, sweep: { running: !!store.running, candidates: 0, ...store.sweep } } : url === '/api/observation' ? store.observation : url.startsWith('/api/sweep/log') ? { log: '' } : url.startsWith('/api/candidates') ? { rows: store.candidates || [] } : url === '/frames' ? store.names : url === '/data/param.json' ? store.param : url === '/data/marks.json' ? store.marks : null;
     return { ok: !!data, status: data ? 200 : 404, json: async () => structuredClone(data || { error: 'not found: ' + url.split('/').pop() }) };
   };
   const names = ['document', 'Image', 'fetch', 'window', 'parent', 'location', 'ResizeObserver', 'devicePixelRatio', 'requestAnimationFrame', 'addEventListener', 'confirm', 'history', 'setInterval'];
@@ -461,6 +461,23 @@ test('计算后端可手动选择主机 CPU 或 CUDA, CPU 请求主机接口且�
     await get('start').click(); const starts = env.post.filter(row => row.url === '/api/sweep'); assert.equal(starts.length, 1); assert.equal(starts[0].data.backend, 'cpu'); assert.equal(starts[0].data.tol, .5);
     backend.value = 'webgpu'; await backend.fire('change'); assert.equal(get('start').disabled, true); assert.equal(reason.dataset.reasons, 'webgpu-unavailable'); assert.equal(reason.hidden, false);
     assert.equal(env.elements.some(element => element.tagName === 'IFRAME'), false);
+  } finally { env.restore(); }
+});
+
+test('主机进度和候选在运行中更新, 等长快照也会刷新', async () => {
+  const store = { names: [], searcher_built: true, candidates: ['seed=1 score=1'], sweep: { backend: 'cuda', running: true, candidate_bytes: { cuda: 14 }, candidate_versions: { cuda: 'first' }, progress: { status: 'running', scanned: 40, total: 100, elapsed: 4, candidates: 1, rate: 10, eta: 6 } } };
+  const env = environment(await readFile(new URL('../web/index.html', import.meta.url), 'utf8'), store), settle = () => new Promise(resolve => setImmediate(resolve));
+  try {
+    await import('../web/app.js?ui-live-host-progress'); const get = id => env.ids.get(id);
+    assert.equal(get('search-progress').hidden, false); assert.equal(get('search-progress').dataset.status, 'running'); assert.equal(get('search-progress-bar').value, .4);
+    await get('go-candidates').click(); await settle(); assert.equal(get('candidates').children[0].children[1].textContent, store.candidates[0]);
+    store.candidates = ['seed=2 score=1']; store.sweep.candidate_versions.cuda = 'second'; store.sweep.progress.scanned = 60;
+    await get('refresh').click(); await settle(); assert.equal(get('candidates').children[0].children[1].textContent, store.candidates[0]); assert.equal(get('search-progress-bar').value, .6);
+    store.sweep.running = false; store.sweep.progress.status = 'stopped'; store.sweep.progress.eta = null;
+    await get('refresh').click(); assert.equal(get('search-progress').dataset.status, 'stopped'); assert.equal(get('search-progress-bar').value, .6);
+    store.sweep.backend = 'cpu'; store.sweep.progress.status = 'completed'; store.sweep.progress.scanned = 100;
+    get('search-backend').value = 'cpu'; await get('search-backend').fire('change'); await get('refresh').click(); assert.equal(get('search-progress-bar').value, 1); assert.equal(get('search-progress').dataset.status, 'completed');
+    get('search-backend').value = 'webgpu'; await get('search-backend').fire('change'); assert.equal(get('search-progress').hidden, true);
   } finally { env.restore(); }
 });
 

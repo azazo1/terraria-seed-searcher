@@ -63,7 +63,15 @@ int main(int argc, char** argv) {
         std::atomic<long long> next(from), done(0), matched(0); std::atomic<int> alive(threads); std::mutex mutex; std::vector<Candidate> candidates;
         const auto started = std::chrono::steady_clock::now(); std::vector<std::thread> workers;
         std::cout << "Host CPU: " << threads << " threads, seeds [" << from << ", " << to << "), columns " << cols << std::endl;
-        std::ofstream("candidates_cpu.txt", std::ios::trunc).close();
+        auto save_candidates = [&]() {
+            std::vector<Candidate> rows;
+            { std::lock_guard<std::mutex> guard(mutex); rows = candidates; }
+            std::sort(rows.begin(), rows.end(), better_candidate);
+            return save_candidate_file("candidates_cpu.txt", [&](std::ostream& output) {
+                for (const auto& c : rows) output << "seed=" << c.seed << " spawn_x=" << c.spawn << " scale=" << c.scale << " score=" << (double)c.score / 10000000 << '\n';
+            });
+        };
+        if (!save_candidates()) throw std::runtime_error("cannot initialize candidates_cpu.txt");
         for (int worker = 0; worker < threads; worker++) workers.emplace_back([&]() {
             int state[56]; unsigned index = 0; RNG r = {state, &index}; std::vector<int> profile(hi - lo);
             while (!interrupted) {
@@ -84,12 +92,20 @@ int main(int argc, char** argv) {
             }
             alive--;
         });
-        while (alive > 0) { std::this_thread::sleep_for(std::chrono::milliseconds(250)); static int tick = 0; if (++tick % 4 == 0) { double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count(); std::lock_guard<std::mutex> guard(mutex); std::cout << "Progress " << done << '/' << to - from << ", " << (long long)(done / std::max(.001, seconds)) << " seeds/s, matched " << matched << ", retained " << candidates.size() << std::endl; } }
+        int tick = 0;
+        bool saved = true;
+        while (alive > 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            if (++tick % 4 == 0) {
+                saved = save_candidates();
+                if (!saved) { interrupted = true; break; }
+                double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+                std::lock_guard<std::mutex> guard(mutex);
+                std::cout << "Progress " << done << '/' << to - from << ", " << (long long)(done / std::max(.001, seconds)) << " seeds/s, matched " << matched << ", retained " << candidates.size() << std::endl;
+            }
+        }
         for (auto& worker : workers) worker.join();
-        std::sort(candidates.begin(), candidates.end(), better_candidate);
-        std::ofstream output("candidates_cpu.txt"); if (!output) throw std::runtime_error("cannot write candidates_cpu.txt");
-        output << std::setprecision(9);
-        for (const auto& c : candidates) output << "seed=" << c.seed << " spawn_x=" << c.spawn << " scale=" << c.scale << " score=" << (double)c.score / 10000000 << '\n';
-        std::cout << (interrupted ? "Stopped" : "Complete") << ": scanned=" << done << " candidates=" << candidates.size() << std::endl; return 0;
+        if (!saved || !save_candidates()) throw std::runtime_error("cannot save candidates_cpu.txt");
+        std::cout << (interrupted ? "Stopped" : "Complete") << ": scanned=" << done << " candidates=" << candidates.size() << " matched=" << matched << std::endl; return 0;
     } catch (const std::exception& error) { std::cerr << "CPU search error: " << error.what() << std::endl; return 1; }
 }

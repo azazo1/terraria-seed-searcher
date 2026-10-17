@@ -36,10 +36,22 @@
           <div class="actions"><button id="export-observation" disabled>导出观测数据</button><button id="import-observation">导入观测数据</button><input id="observation-file" type="file" accept="application/json,.json" hidden></div>
           <p id="observation-status" class="hint" role="status" aria-live="polite"></p><p class="hint">文件仅包含以格为单位的逐列高度 (缺失或作废列为 -999) 和出生点观测列号. 不包含截图, 标定, 拼接, 画布标记或搜索设置. 后续保存人工标注会重新生成观测.</p>
         </div>
+        <div id="search-progress" class="panel stack search-progress" hidden>
+          <div class="row spread"><div class="row"><strong id="progress-backend"></strong><span id="progress-status" role="status" aria-live="polite"></span></div><strong id="progress-percent" class="progress-percent">0.00%</strong></div>
+          <progress id="search-progress-bar" max="1" value="0" aria-label="种子搜索进度" aria-describedby="progress-scanned"></progress>
+          <dl class="progress-metrics">
+            <div><dt>已扫描 / 总种子数</dt><dd id="progress-scanned"></dd></div>
+            <div><dt>搜索速度</dt><dd id="progress-rate"></dd></div>
+            <div><dt>预计剩余</dt><dd id="progress-eta"></dd></div>
+            <div><dt>已用时间</dt><dd id="progress-elapsed"></dd></div>
+            <div><dt>累计候选</dt><dd id="progress-candidates"></dd></div>
+            <div><dt>剩余种子数</dt><dd id="progress-remaining"></dd></div>
+          </dl>
+          <p id="progress-note" class="hint"></p>
+        </div>
         <div class="panel stack"><h2>粗筛设置</h2>
           <label class="field">计算方式<select id="search-backend"><option value="webgpu">浏览器 GPU (WebGPU)</option><option value="cpu">主机 CPU</option><option value="cuda">主机 NVIDIA GPU (CUDA)</option></select></label>
           <p id="gpu-support" class="hint"></p><p class="hint">浏览器 WebGPU 支持 6400 x 1800 中世界和最多 700 个观测列, 每次先校验设备结果再分批搜索. CPU 和 CUDA 在运行工作台服务的主机上计算. 请保持页面打开; 大范围搜索可能耗时很长. 浏览器候选暂存于本页, 刷新前请下载.</p>
-          <progress id="gpu-progress" max="1" value="0" hidden aria-label="浏览器搜索进度"></progress><p id="gpu-progress-detail" class="hint" role="status" aria-live="polite"></p>
           <div class="fields"><label class="field">容差<input type="number" id="tol" value="0.5" step="any" min="0.01" max="10"></label><label class="field">最低得分<input type="number" id="offer" value="0.55" step="any" min="0" max="1"></label></div>
           <details id="search-advanced"><summary>高级参数 (含出生点范围)</summary><div class="fields">
             <label class="field">种子起始值 (包含)<input type="number" id="seed-from" min="0" max="2147483646" step="1" value="0"></label><label class="field">种子结束值 (不含)<input type="number" id="seed-to" min="1" max="2147483647" step="1" value="2147483647"></label>

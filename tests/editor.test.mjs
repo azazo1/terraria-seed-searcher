@@ -23,8 +23,9 @@ test('浏览器搜索会话保留候选, 报告进度并在失败或停止后释
   const fake = { cancelled: false, adapterInfo: 'test GPU', initialize: async () => {}, selfTest: async () => ({ seeds: 12, columns: 76800 }), run: async (_obs, _parameters, progress) => { progress({ next: 45, scanned: 5, total: 5, elapsed: .1, candidates: [{ seed: 44, score: .6, spawn: 3200, scale: 1 }, { seed: 42, score: 1, spawn: 3200, scale: 1 }] }); return { next: 45, scanned: 5, cancelled: false }; }, stop() { this.cancelled = true; }, destroy() { destroyed++; } };
   const session = new SearchSession(() => changed++, () => fake); await session.start(obs, settings);
   assert.equal(session.running, false); assert.equal(destroyed, 1); assert.ok(changed > 2); assert.equal(session.rows[0].seed, 42); assert.equal(session.summary.next, 45); assert.equal(session.lines().length, 2);
-  fake.selfTest = async () => { throw new Error('probe failed'); }; await assert.rejects(session.start(obs, settings), /probe failed/); assert.equal(session.running, false); assert.equal(destroyed, 2); assert.equal(session.rows.length, 0);
-  fake.selfTest = async () => { session.stop(); return null; }; await session.start(obs, settings); assert.equal(destroyed, 3); assert.equal(session.running, false);
+  assert.equal(session.progress.status, 'completed'); assert.equal(session.progress.scanned, 5); assert.equal(session.progress.total, 5); assert.equal(session.progress.candidates, 2); assert.ok(Number.isFinite(session.progress.elapsed) && session.progress.elapsed >= 0);
+  fake.selfTest = async () => { throw new Error('probe failed'); }; await assert.rejects(session.start(obs, settings), /probe failed/); assert.equal(session.running, false); assert.equal(destroyed, 2); assert.equal(session.rows.length, 0); assert.equal(session.progress.status, 'failed'); assert.equal(session.progress.scanned, 0);
+  fake.selfTest = async () => { session.stop(); return null; }; await session.start(obs, settings); assert.equal(destroyed, 3); assert.equal(session.running, false); assert.equal(session.progress.status, 'stopped');
 });
 
 test('粗筛设置保留数值校验, 拒绝错误类型和范围', () => {

@@ -11,6 +11,7 @@
  * 用法: sweep.exe <观测文件> [--scale 1.0] [--cols 3550] [--tol 1.5] [--offer 0.55]
  *                  [--spawn-lo 3160] [--spawn-hi 3240] [--check <seed>]
  */
+#include "../search/candidate-file.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -503,6 +504,13 @@ int main(int argc, char **argv) {
     const int MAX_OUT = 500000;   /* 按当前密度全空间约 12.6 万条, 留足余量 */
     std::vector<int> h_seed, h_base, h_scale;
     std::vector<float> h_score;
+    std::vector<int> live_order;
+    auto save_candidates = [&](const std::vector<int>& order) {
+        return save_candidate_file("candidates_gpu2.txt", [&](std::ostream& output) {
+            for (int k : order) output << "seed=" << h_seed[k] << " spawn_x=" << h_base[k] + marker << " scale=" << scales[h_scale[k]] << " score=" << h_score[k] << '\n';
+        });
+    };
+    if (!save_candidates(live_order)) { fprintf(stderr, "cannot initialize candidates_gpu2.txt\n"); return 1; }
 
     unsigned long long *h_best = (unsigned long long *)malloc(sizeof(unsigned long long) * batch);
     int threads = 128;
@@ -514,7 +522,6 @@ int main(int argc, char **argv) {
     printf("kernel A 共享内存 %zu B, kernel B 共享内存 %zu B\n", shmem_a, shmem_b);
     fflush(stdout);
 
-    int total_checked = 0;
     long long total = to - from;
     for (long long start = from; start < to; start += batch) {
         int nthis = (int)((to - start < batch) ? (to - start) : batch);
@@ -560,12 +567,17 @@ int main(int argc, char **argv) {
         for (int i : ord) {
             int q = (int)(h_best[i] & 0xffffffffu);
             if ((int)h_seed.size() < MAX_OUT) {
+                live_order.push_back((int)h_seed.size());
                 h_seed.push_back(a.seed_from + i);
                 h_base.push_back(base_lo + q / nscale);
                 h_scale.push_back(q % nscale);
                 h_score.push_back((float)((double)(h_best[i] >> 32) / 10000000.0));
             }
         }
+        // 运行时只发布最高分的 2000 条, 每批最多合并 100 条新记录.
+        std::sort(live_order.begin(), live_order.end(), [&](int x, int y) { return h_score[x] > h_score[y] || (h_score[x] == h_score[y] && h_seed[x] < h_seed[y]); });
+        if (live_order.size() > 2000) live_order.resize(2000);
+        if (!save_candidates(live_order)) { fprintf(stderr, "cannot save candidates_gpu2.txt\n"); return 1; }
         printf("  批 %lld..%lld 完成, 本批达标 %zu 条, 累计候选 %zu, 进度 %.3f%%\n",
                start, start + nthis, ord.size(), h_seed.size(),
                100.0 * (start + nthis - from) / (double)total);
@@ -583,15 +595,7 @@ int main(int argc, char **argv) {
         printf("  seed=%d spawn_x=%d scale=%.2f score=%.4f\n",
                h_seed[k], h_base[k] + marker, scales[h_scale[k]], h_score[k]);
     }
-    FILE *f = fopen("candidates_gpu2.txt", "w");
-    if (f) {
-        for (int i = 0; i < count; i++) {
-            int k = order[i];
-            fprintf(f, "seed=%d spawn_x=%d scale=%.2f score=%.4f\n",
-                    h_seed[k], h_base[k] + marker, scales[h_scale[k]], h_score[k]);
-        }
-        fclose(f);
-    }
+    if (!save_candidates(order)) { fprintf(stderr, "cannot save candidates_gpu2.txt\n"); return 1; }
     return 0;
 }
 #endif // TERRARIA_HOST_ONLY

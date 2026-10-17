@@ -4,6 +4,7 @@ import { migrateParam } from './frame-schema.js';
 import { bindSearchParameters } from './search-controls.js';
 import { bindObservationTransfer } from './observation-transfer.js';
 import { SearchSession } from './gpu/search-session.js';
+import { renderSearchProgress } from './search-progress.js';
 const labels = {
   import: ['导入主播截图', '导入原始截图, 然后逐张标定方块网格.'],
   grid: ['网格标定', '左键选第一条, 右键选第二条. Ctrl 拖动已选线平移相位, 左侧可调整间隔格数.'],
@@ -22,6 +23,8 @@ const browserSearch = new SearchSession(() => {
 });
 const browserMode = () => $('search-backend').value === 'webgpu';
 const candidateSize = st => st?.sweep?.candidate_bytes?.[$('search-backend').value] ?? st?.sweep?.candidates;
+const candidateVersion = st => String(st?.sweep?.candidate_versions?.[$('search-backend').value] ?? candidateSize(st));
+let loadingCandidates = false;
 const webGpuSupported = !!globalThis.navigator?.gpu && !!globalThis.isSecureContext;
 $('search-backend').value = webGpuSupported ? 'webgpu' : 'cuda';
 $('search-backend').onchange = () => { if (state) renderState(state); loadLog().catch(error => toast(error.message, true)); candidateKey = ''; if (active === 'candidates') loadCandidates(true).catch(error => toast(error.message, true)); };
@@ -171,9 +174,7 @@ function renderState(st) {
   $('stop').disabled = !running; $('search-backend').disabled = running || transferring || startingSearch;
   $('export-observation').disabled = startingSearch || transferring || running || !obs; $('import-observation').disabled = startingSearch || transferring || running;
   $('download-browser-candidates').disabled = !browserSearch.rows.length;
-  const progress = browserSearch.summary; $('gpu-progress').hidden = !local || !browserSearch.hasRun;
-  $('gpu-progress').value = progress ? progress.scanned / progress.total : 0;
-  $('gpu-progress-detail').textContent = local && browserSearch.hasRun ? progress ? `${browserSearch.running ? '计算中' : '已结束'}: ${progress.scanned} / ${progress.total}, ${progress.elapsed.toFixed(1)} 秒, 候选 ${browserSearch.matched}, 下一种子 ${progress.next}.` : browserSearch.running ? '正在准备计算设备...' : '本次搜索未扫描种子, 请查看运行输出.' : '';
+  renderSearchProgress($, local ? browserSearch.progress : backend === sweep.backend ? sweep.progress : null, backend);
   if (local) {
     $('nav-candidates').textContent = browserSearch.hasRun ? `${browserSearch.rows.length} 条浏览器候选` : '暂无浏览器候选';
     kv($('search-info'), [['计算方式', '浏览器 GPU / WebGPU'], ['观测', obs ? `${obs.valid} 个有效列 / ${obs.columns} 列` : '尚无有效观测'], ['出生点列', obs?.marker ?? '-'], ['状态', browserSearch.running ? '运行中' : '空闲']]);
@@ -182,7 +183,7 @@ function renderState(st) {
     kv($('search-info'), [['计算方式', '主机 CPU'], ['搜索器', st.cpu_searcher_built ? '已编译' : '未编译, 请先运行 just build-cpu'], ['观测', obs ? `${obs.valid} 个有效列 / ${obs.columns} 列` : '尚无有效观测'], ['出生点列', obs?.marker ?? '-'], ['状态', sweep.running ? `运行中 ${duration(sweep.elapsed)}` : '空闲']]);
   }
   if ((active === 'search' && sweep.running) || (lastRun && !sweep.running)) loadLog().catch(e => toast(e.message, true));
-  if (active === 'candidates' && String(candidateSize(st)) !== candidateKey) loadCandidates().catch(e => toast(e.message, true));
+  if (active === 'candidates' && candidateVersion(st) !== candidateKey) loadCandidates().catch(e => toast(e.message, true));
   lastRun = !!sweep.running;
 }
 async function refreshState() {
@@ -253,13 +254,18 @@ async function loadLog() {
 }
 async function loadCandidates(force = false) {
   const local = browserMode(), backend = $('search-backend').value;
-  if (!local && !force && candidateKey === String(candidateSize(state))) return;
-  const result = local ? { rows: browserSearch.lines().slice(0, 200) } : await request('/api/candidates?backend=' + backend);
+  if (loadingCandidates || (!local && !force && candidateKey === candidateVersion(state))) return;
+  const version = candidateVersion(state);
+  loadingCandidates = true;
+  let result;
+  try { result = local ? { rows: browserSearch.lines().slice(0, 200) } : await request('/api/candidates?backend=' + backend); }
+  finally { loadingCandidates = false; }
   if ($('search-backend').value !== backend) return;
-  candidateKey = String(candidateSize(state));
+  candidateKey = version;
   $('candidates').replaceChildren();
   for (const [index, row] of (result.rows || []).entries()) { const tr = document.createElement('tr'), rank = document.createElement('td'), value = document.createElement('td'); rank.textContent = index + 1; value.textContent = row; tr.append(rank, value); $('candidates').append(tr); }
-  $('candidate-hint').textContent = result.rows?.length ? `显示前 ${result.rows.length} 条候选. 需要结合游戏内地形进一步核对.` : '暂无候选. 完成标注并运行搜索后会在这里显示.';
+  const live = local ? browserSearch.running : state?.sweep?.running && state.sweep.backend === backend;
+  $('candidate-hint').textContent = result.rows?.length ? `显示前 ${result.rows.length} 条候选. ${live ? '搜索中自动刷新, 高分候选可能替换已有记录. ' : ''}需要结合游戏内地形进一步核对.` : live ? '搜索进行中, 暂无已发布的候选. 本页会自动刷新.' : '暂无候选. 完成标注并运行搜索后会在这里显示.';
 }
 $('start').onclick = async () => {
   if (startingSearch || browserSearch.running || state?.sweep?.running || transferring) return;
@@ -284,4 +290,4 @@ $('refresh').onclick = async () => { try { await flushCurrent(); await refreshSt
 $('refresh-candidates').onclick = () => loadCandidates(true).catch(e => toast(e.message, true));
 try { await refreshState(); const tab = location.hash.slice(1); if (labels[tab] && tab !== active) await switchTab(tab, { updateHash: false }); }
 catch (e) { setStartReasons([{ code: 'connection', message: '无法读取搜索状态. 请检查工作台服务是否正在运行, 然后刷新状态.' }]); toast('连接失败: ' + e.message, true); }
-setInterval(poll, 5000);
+setInterval(poll, 1000);

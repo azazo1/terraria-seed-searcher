@@ -179,6 +179,27 @@ class PipelineTest(unittest.TestCase):
             _, rows = self.call("/api/candidates?backend=cpu")
             self.assertEqual(json.loads(rows)["rows"], ["seed=42 spawn_x=3200 scale=1 score=1"])
 
+    def test_live_progress_and_same_size_candidate_replacement(self):
+        log = serve.WORK / "synthetic-progress.txt"
+        log.write_text("  批 100..140 完成, 本批达标 1 条, 累计候选 1, 进度 40.000%\n", encoding="utf-8")
+        candidate = serve.WORK / "candidates_gpu2.txt"
+        candidate.write_text("seed=1 score=1\n")
+        proc = Mock(); proc.poll.return_value = None
+        with patch.dict(serve.SWEEP, {"proc": proc, "range": [100, 200], "backend": "cuda", "started": 100, "finished": None, "stopping": False, "log": log}), patch.object(serve.time, "time", return_value=104):
+            _, data = self.call("/api/state"); first = json.loads(data)["sweep"]
+            self.assertEqual((first["progress"]["scanned"], first["progress"]["rate"], first["progress"]["eta"]), (40, 10, 6))
+            temporary = candidate.with_suffix(".tmp")
+            temporary.write_text("seed=2 score=1\n")
+            temporary.replace(candidate)
+            _, data = self.call("/api/state"); second = json.loads(data)["sweep"]
+            self.assertEqual(first["candidate_bytes"], second["candidate_bytes"])
+            self.assertNotEqual(first["candidate_versions"], second["candidate_versions"])
+            _, data = self.call("/api/candidates?backend=cuda")
+            self.assertEqual(json.loads(data)["rows"], ["seed=2 score=1"])
+            proc.poll.return_value = 1
+            _, data = self.call("/api/state")
+            self.assertEqual(json.loads(data)["sweep"]["progress"]["status"], "failed")
+
     def test_search_result_is_read_from_searcher_output(self):
         output = serve.WORK / "candidates_gpu2.txt"
         output.write_text("seed=fixture spawn_x=3200 scale=1.00 score=0.9000\n", encoding="utf-8")
@@ -198,7 +219,7 @@ class PipelineTest(unittest.TestCase):
                 self.assertTrue(response.url.endswith(path))
 
     def test_new_assets_and_traversal_boundary(self):
-        for path in ("/", "/web/ui.css", "/web/grid.css", "/web/grid.js", "/web/grid-model.js", "/web/frame-schema.js", "/web/frame-geometry.js", "/web/editor-core.js", "/web/calib.js", "/web/mark.js", "/web/observation.js", "/web/app.js", "/web/search-parameters.js", "/web/search-controls.js", "/web/observation-transfer.js", "/web/gpu/search-engine.js", "/web/gpu/terrain-reference.js", "/web/gpu/search-session.js", "/web/gpu/search.wgsl"):
+        for path in ("/", "/web/ui.css", "/web/grid.css", "/web/grid.js", "/web/grid-model.js", "/web/frame-schema.js", "/web/frame-geometry.js", "/web/editor-core.js", "/web/calib.js", "/web/mark.js", "/web/observation.js", "/web/app.js", "/web/search-progress.js", "/web/search-parameters.js", "/web/search-controls.js", "/web/observation-transfer.js", "/web/gpu/search-engine.js", "/web/gpu/terrain-reference.js", "/web/gpu/search-session.js", "/web/gpu/search.wgsl"):
             with self.subTest(path=path):
                 code, body = self.call(path)
                 self.assertEqual(code, 200)

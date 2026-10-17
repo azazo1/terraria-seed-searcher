@@ -23,6 +23,7 @@ import shutil
 import subprocess
 import tempfile
 import observation_archive
+import search_progress
 import sys
 import threading
 import time
@@ -264,9 +265,12 @@ class Handler(BaseHTTPRequestHandler):
                 observed = read_json(DATA / "observed_meta.json", None)
             with STATE_LOCK:
                 running = SWEEP["proc"] is not None and SWEEP["proc"].poll() is None
-                elapsed = time.time() - SWEEP["started"] if SWEEP["started"] else 0
+                progress = search_progress.snapshot(SWEEP, time.time())
+                elapsed = progress["elapsed"] if progress else 0
             cands = candidates_path()
-            candidate_bytes = {backend: path.stat().st_size if path.is_file() else 0 for backend in ("cpu", "cuda") for path in (candidates_path(backend),)}
+            candidate_stats = {backend: path.stat() if path.is_file() else None for backend in ("cpu", "cuda") for path in (candidates_path(backend),)}
+            candidate_bytes = {backend: info.st_size if info else 0 for backend, info in candidate_stats.items()}
+            candidate_versions = {backend: f"{info.st_mtime_ns}:{info.st_size}" if info else "" for backend, info in candidate_stats.items()}
             return self._send(200, {
                 "frames": [f.name for f in sorted(FRAMES.glob("*")) if f.is_file()],
                 "param": param,
@@ -275,7 +279,7 @@ class Handler(BaseHTTPRequestHandler):
                 "searcher_built": SEARCHER.is_file(),
                 "cpu_searcher_built": CPU_SEARCHER.is_file(),
                 "searcher_paths": {"cuda": str(SEARCHER), "cpu": str(CPU_SEARCHER)},
-                "sweep": {"running": running, "backend": SWEEP.get("backend", "cuda"), "candidate_bytes": candidate_bytes, "elapsed": round(elapsed, 1),
+                "sweep": {"running": running, "backend": SWEEP.get("backend", "cuda"), "candidate_bytes": candidate_bytes, "candidate_versions": candidate_versions, "progress": progress, "elapsed": round(elapsed, 1),
                           "candidates": cands.stat().st_size if cands.is_file() else 0},
             })
         if p in ("/api/sweep/log", "/api/candidates"):
@@ -286,16 +290,20 @@ class Handler(BaseHTTPRequestHandler):
             with STATE_LOCK:
                 log = SWEEP["log"] if backend == SWEEP.get("backend", "cuda") else None
                 log = log or (WORK / f"sweep-{backend}.log")
-            txt = Path(log).read_text(encoding="utf-8", errors="replace") if Path(log).is_file() else ""
+            txt = search_progress.read_tail(log)
             return self._send(200, {"log": "\n".join(txt.splitlines()[-60:])})
         if p == "/api/candidates":
             f = candidates_path(backend)
             if not f.is_file():
                 return self._send(200, {"rows": []})
             rows = []
-            for line in f.read_text(encoding="utf-8", errors="replace").splitlines()[:200]:
-                if "seed=" in line:
-                    rows.append(line.strip())
+            # 只读取展示所需的前 200 条; 大范围搜索的完整结果可能很大.
+            with f.open(encoding="utf-8", errors="replace") as stream:
+                for line in stream:
+                    if "seed=" in line:
+                        rows.append(line.strip())
+                    if len(rows) == 200:
+                        break
             return self._send(200, {"rows": rows})
         return self._send(404, {"error": "no route"})
 
@@ -370,11 +378,16 @@ class Handler(BaseHTTPRequestHandler):
                     SWEEP["proc"] = subprocess.Popen(cmd, cwd=str(WORK), stdout=fh, stderr=subprocess.STDOUT)
                 SWEEP["backend"] = backend
                 SWEEP["started"] = time.time()
+                SWEEP["range"] = [int(cmd[3]), int(cmd[4])]
+                SWEEP["finished"] = None
+                SWEEP["stopping"] = False
                 SWEEP["log"] = log
+                threading.Thread(target=search_progress.watch_exit, args=(SWEEP, SWEEP["proc"], STATE_LOCK), daemon=True).start()
             return self._send(200, {"ok": True, "cmd": " ".join(cmd), "log": str(log)})
         if u.path == "/api/sweep/stop":
             with STATE_LOCK:
                 if SWEEP["proc"] and SWEEP["proc"].poll() is None:
+                    SWEEP["stopping"] = True
                     SWEEP["proc"].terminate()
             return self._send(200, {"ok": True})
         return self._send(404, {"error": "no route"})
