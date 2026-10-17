@@ -118,6 +118,11 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      - name: 准备 uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: false
+
       - name: 准备 Go
         uses: actions/setup-go@v7
         with:
@@ -140,8 +145,10 @@ jobs:
     needs: version
     strategy:
       fail-fast: false
+      # 当前发布 4 个平台; CUDA 只构建 x86_64, macOS 只提供 CPU 搜索器.
       matrix:
         include:
+          # CUDA 12.8 与 VS 2026 不兼容, Windows 使用 VS 2022.
           - os: windows-2022
             platform: windows
             arch: x86_64
@@ -199,7 +206,9 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ${{ matrix.cuda_dir }}
-          key: cuda-12.8.1-${{ runner.os }}-sub-v1
+          key: cuda-12.8.1-${{ runner.os }}-${{ matrix.arch }}-sub-v1
+          restore-keys: |
+            cuda-12.8.1-${{ runner.os }}-${{ matrix.arch }}-
 
       - name: 安装 CUDA Toolkit
         if: matrix.cuda && steps.cuda-cache.outputs.cache-hit != 'true'
@@ -215,7 +224,7 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: ${{ matrix.cuda_dir }}
-          key: cuda-12.8.1-${{ runner.os }}-sub-v1
+          key: cuda-12.8.1-${{ runner.os }}-${{ matrix.arch }}-sub-v1
 
       - name: 配置缓存的 CUDA
         if: matrix.cuda && steps.cuda-cache.outputs.cache-hit == 'true'
