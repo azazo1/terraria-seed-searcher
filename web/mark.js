@@ -8,7 +8,7 @@ const TOOLS = [
   { id: 'erase', name: '擦除标记', color: '#a1b2c3', glyph: '⌫' }
 ];
 let frames = [], marks = new Map(), T = 20.86, x0 = 0, marker = 141, tool = 'block', hover = null;
-let ready = false, saved = '', grid = .35, markerMode = false, inputBefore = null;
+let ready = false, saved = '', alpha = 1, grid = .35, markerMode = false, inputBefore = null;
 const history = new History(), autosave = new Autosave(save, () => dirty());
 let resolveReady, rejectReady;
 const whenReady = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; }); whenReady.catch(() => {});
@@ -18,7 +18,7 @@ const snapshot = () => ({ cols: [...marks].map(([c, m]) => ({ c, ...m })).sort((
 const fingerprint = () => JSON.stringify(snapshot());
 const dirty = () => ready && fingerprint() !== saved;
 const view = new Viewport($('workspace'), (ctx, v) => {
-  for (const f of frames) drawFrame(ctx, v, f, { grid });
+  for (const f of frames) drawFrame(ctx, v, f, { grid, opacity: alpha });
 }, (ctx, v) => {
   const b = v.bounds, radius = 4 / v.zoom;
   if ($('show-marks').checked) {
@@ -115,6 +115,7 @@ bindPan(view, (point, e) => {
   changed();
 });
 $('undo').onclick = () => restore(history.undo(snapshot())); $('redo').onclick = () => restore(history.redo(snapshot()));
+$('alpha').oninput = e => { alpha = Number(e.target.value); view.invalidate(); };
 $('grid').oninput = e => { grid = Number(e.target.value); view.invalidate(); };
 $('show-marks').onchange = $('show-marker').onchange = () => view.invalidate(false);
 $('pick-marker').onclick = () => { markerMode = !markerMode; $('pick-marker').setAttribute('aria-pressed', String(markerMode)); $('selection').textContent = markerMode ? '在图片中点击出生点位置' : `当前工具: ${TOOLS.find(t => t.id === tool).name}`; view.invalidate(false); };
