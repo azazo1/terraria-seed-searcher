@@ -274,6 +274,7 @@ class Handler(BaseHTTPRequestHandler):
                 "observed": observed,
                 "searcher_built": SEARCHER.is_file(),
                 "cpu_searcher_built": CPU_SEARCHER.is_file(),
+                "searcher_paths": {"cuda": str(SEARCHER), "cpu": str(CPU_SEARCHER)},
                 "sweep": {"running": running, "backend": SWEEP.get("backend", "cuda"), "candidate_bytes": candidate_bytes, "elapsed": round(elapsed, 1),
                           "candidates": cands.stat().st_size if cands.is_file() else 0},
             })

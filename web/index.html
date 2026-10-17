@@ -48,7 +48,8 @@
             <label class="field">批大小<input type="number" id="search-batch" min="1" max="2147483647" step="1" value="400000"></label><label class="field">GPU 编号 (仅 CUDA)<input type="number" id="search-device" min="0" max="1024" step="1" value="0"></label>
           </div><p class="hint">默认参数与此前搜索一致. 搜索尺度调整粗筛的列间距, 不是图片缩放. 出生点观测列来自最终观测数据.</p></details>
           <p class="hint">调低最低得分会保留更多候选.</p>
-          <div class="actions"><button id="start" class="primary" disabled>开始搜索</button><button id="stop" disabled>停止搜索</button><button id="go-candidates">查看候选 →</button></div>
+          <p id="start-reason" class="hint warn" role="status" aria-live="polite">正在读取搜索状态...</p>
+          <div class="actions"><button id="start" class="primary" disabled aria-describedby="start-reason">开始搜索</button><button id="stop" disabled>停止搜索</button><button id="go-candidates">查看候选 →</button></div>
         </div>
         <div class="panel stack"><h2>运行输出</h2><pre id="log">搜索尚未启动.</pre></div>
       </div>

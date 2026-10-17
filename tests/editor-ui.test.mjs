@@ -63,7 +63,7 @@ function environment(html, store) {
       return { ok: true, json: async () => ({ ok: true, observed: data.cols?.length ? { valid: data.cols.length, step_rate: 10 } : null }) };
     }
     if (store.readFailure?.url === url) return { ok: false, status: store.readFailure.status, json: async () => ({ error: store.readFailure.error }) };
-    const data = url === '/api/state' ? { frames: store.names, param: store.param, marks: { columns: store.marks?.cols?.length || 0 }, observed: store.observed || null, searcher_built: !!store.searcher_built, cpu_searcher_built: !!store.cpu_searcher_built, sweep: { running: !!store.running, candidates: 0 } } : url === '/api/observation' ? store.observation : url.startsWith('/api/sweep/log') ? { log: '' } : url.startsWith('/api/candidates') ? { rows: [] } : url === '/frames' ? store.names : url === '/data/param.json' ? store.param : url === '/data/marks.json' ? store.marks : null;
+    const data = url === '/api/state' ? { frames: store.names, param: store.param, marks: { columns: store.marks?.cols?.length || 0 }, observed: store.observed || null, searcher_built: !!store.searcher_built, cpu_searcher_built: !!store.cpu_searcher_built, searcher_paths: store.searcher_paths, sweep: { running: !!store.running, candidates: 0 } } : url === '/api/observation' ? store.observation : url.startsWith('/api/sweep/log') ? { log: '' } : url.startsWith('/api/candidates') ? { rows: [] } : url === '/frames' ? store.names : url === '/data/param.json' ? store.param : url === '/data/marks.json' ? store.marks : null;
     return { ok: !!data, status: data ? 200 : 404, json: async () => structuredClone(data || { error: 'not found: ' + url.split('/').pop() }) };
   };
   const names = ['document', 'Image', 'fetch', 'window', 'parent', 'location', 'ResizeObserver', 'devicePixelRatio', 'requestAnimationFrame', 'addEventListener', 'confirm', 'history', 'setInterval'];
@@ -447,14 +447,19 @@ test('导入最终观测前等待旧编辑器保存, 后续进入搜索不会用
 });
 
 test('计算后端可手动选择主机 CPU 或 CUDA, CPU 请求主机接口且按编译状态启用', async () => {
-  const store = { names: [], observed: { valid: 30, columns: 30, marker: 2, source: 'import' }, searcher_built: false, cpu_searcher_built: true };
+  const store = { names: [], observed: { valid: 30, columns: 30, marker: 2, source: 'import' }, searcher_built: false, cpu_searcher_built: true, searcher_paths: { cuda: 'C:/fixture/sweep2.exe', cpu: 'C:/fixture/sweep-cpu.exe' } };
   const env = environment(await readFile(new URL('../web/index.html', import.meta.url), 'utf8'), store);
   try {
     await import('../web/app.js?ui-host-cpu-choice'); const get = id => env.ids.get(id), backend = get('search-backend');
     backend.value = 'cuda'; await backend.fire('change'); assert.equal(get('start').disabled, true);
-    backend.value = 'cpu'; await backend.fire('change'); assert.equal(get('start').disabled, false);
+    const reason = get('start-reason'); assert.equal(reason.hidden, false); assert.equal(reason.dataset.reasons, 'cuda-missing'); assert.ok(reason.children.some(line => line.textContent.includes(store.searcher_paths.cuda))); assert.equal(get('start').getAttribute('aria-describedby'), reason.id);
+    store.searcher_built = true; await get('refresh').click(); assert.equal(get('start').disabled, false); assert.equal(reason.hidden, true); assert.equal(reason.children.length, 0);
+    store.observed = null; await get('refresh').click(); assert.equal(get('start').disabled, true); assert.equal(reason.dataset.reasons, 'observation'); assert.equal(reason.hidden, false);
+    store.observed = { valid: 30, columns: 30, marker: 2, source: 'import' }; store.running = true; await get('refresh').click(); assert.equal(reason.dataset.reasons, 'running');
+    store.running = false; await get('refresh').click();
+    backend.value = 'cpu'; await backend.fire('change'); assert.equal(get('start').disabled, false); assert.equal(reason.hidden, true);
     await get('start').click(); const starts = env.post.filter(row => row.url === '/api/sweep'); assert.equal(starts.length, 1); assert.equal(starts[0].data.backend, 'cpu'); assert.equal(starts[0].data.tol, .5);
-    backend.value = 'webgpu'; await backend.fire('change'); assert.equal(get('start').disabled, true);
+    backend.value = 'webgpu'; await backend.fire('change'); assert.equal(get('start').disabled, true); assert.equal(reason.dataset.reasons, 'webgpu-unavailable'); assert.equal(reason.hidden, false);
     assert.equal(env.elements.some(element => element.tagName === 'IFRAME'), false);
   } finally { env.restore(); }
 });

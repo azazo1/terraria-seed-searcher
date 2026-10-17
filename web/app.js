@@ -132,6 +132,12 @@ function kv(container, pairs) {
   for (const [label, value] of pairs) { const dt = document.createElement('dt'), dd = document.createElement('dd'); dt.textContent = label; dd.textContent = value; container.append(dt, dd); }
 }
 function duration(s) { return s < 60 ? `${Math.floor(s)} 秒` : `${Math.floor(s / 60)} 分 ${Math.floor(s % 60)} 秒`; }
+function setStartReasons(reasons) {
+  const notice = $('start-reason'); notice.replaceChildren(); notice.hidden = !reasons.length;
+  notice.dataset.reasons = reasons.map(reason => reason.code).join(' ');
+  for (const reason of reasons) { const line = document.createElement('span'); line.style.display = 'block'; line.textContent = reason.message; notice.append(line); }
+  $('start').disabled = !!reasons.length;
+}
 function renderState(st) {
   if (st.param) st = { ...st, param: migrateParam(st.param) };
   state = st; $('connection').textContent = '已连接 · ' + new Date().toLocaleTimeString('zh-CN', { hour12: false });
@@ -153,7 +159,15 @@ function renderState(st) {
   const backend = $('search-backend').value, local = browserMode(), running = sweep.running || browserSearch.running;
   $('gpu-support').textContent = backend === 'webgpu' ? webGpuSupported ? '已检测到 WebGPU 接口, 开始时会申请设备并验证内核. 无需 CUDA.' : '当前环境未提供 WebGPU. 可手动选择 CPU 或 CUDA.' : backend === 'cpu' ? st.cpu_searcher_built ? '使用运行工作台服务的主机 CPU, 无需 GPU 或 CUDA.' : '主机 CPU 搜索器未编译, 请先运行 just build-cpu.' : '调用运行工作台服务的机器上的 NVIDIA CUDA 搜索器.';
   $('nav-search').textContent = running ? '搜索进行中' : obs ? '观测已就绪' : '等待标注';
-  $('start').disabled = startingSearch || transferring || running || !obs || (backend === 'cpu' && !st.cpu_searcher_built) || (backend === 'cuda' && !st.searcher_built) || (backend === 'webgpu' && !webGpuSupported);
+  const reasons = [];
+  if (startingSearch) reasons.push({ code: 'starting', message: '正在准备搜索, 请稍候.' });
+  if (transferring) reasons.push({ code: 'transferring', message: '正在导入或导出观测, 请等待操作完成.' });
+  if (running) reasons.push({ code: 'running', message: '已有搜索正在运行. 请先停止当前搜索, 再开始新的搜索.' });
+  if (!obs) reasons.push({ code: 'observation', message: '尚无最终观测数据. 请先完成地表标注, 或在搜索准备卡片导入观测数据.' });
+  if (backend === 'cpu' && !st.cpu_searcher_built) reasons.push({ code: 'cpu-missing', message: `主机 CPU 搜索器不存在. 请在运行工作台服务的主机上运行 just build-cpu. 预期文件: ${st.searcher_paths?.cpu || '仓库根目录的 sweep-cpu (Windows 为 sweep-cpu.exe)'}.` });
+  if (backend === 'cuda' && !st.searcher_built) reasons.push({ code: 'cuda-missing', message: `主机 CUDA 搜索器不存在. 请先在运行工作台服务的主机上编译 CUDA 搜索器, 并将产物放在预期位置: ${st.searcher_paths?.cuda || '仓库根目录的 sweep2 (Windows 为 sweep2.exe)'}. 仅切换到 CUDA 或安装 CUDA 不会生成搜索器.` });
+  if (backend === 'webgpu' && !webGpuSupported) reasons.push({ code: 'webgpu-unavailable', message: '当前环境未提供 WebGPU. 请使用支持 WebGPU 的浏览器并通过 localhost 或 HTTPS 打开, 或选择主机 CPU / CUDA.' });
+  setStartReasons(reasons);
   $('stop').disabled = !running; $('search-backend').disabled = running || transferring || startingSearch;
   $('export-observation').disabled = startingSearch || transferring || running || !obs; $('import-observation').disabled = startingSearch || transferring || running;
   $('download-browser-candidates').disabled = !browserSearch.rows.length;
@@ -179,7 +193,7 @@ async function refreshState() {
 async function poll() {
   if (polling || document.hidden || switching) return;
   polling = true;
-  try { await refreshState(); } catch (e) { $('connection').textContent = '连接中断'; toast('无法更新状态: ' + e.message, true); }
+  try { await refreshState(); } catch (e) { $('connection').textContent = '连接中断'; setStartReasons([{ code: 'connection', message: '无法连接工作台服务, 请检查服务是否正在运行, 然后刷新状态.' }]); toast('无法更新状态: ' + e.message, true); }
   finally { polling = false; }
 }
 function renderFrames(names) {
@@ -269,5 +283,5 @@ $('stop').onclick = async () => {
 $('refresh').onclick = async () => { try { await flushCurrent(); await refreshState(); toast(''); } catch (e) { toast(e.message, true); } };
 $('refresh-candidates').onclick = () => loadCandidates(true).catch(e => toast(e.message, true));
 try { await refreshState(); const tab = location.hash.slice(1); if (labels[tab] && tab !== active) await switchTab(tab, { updateHash: false }); }
-catch (e) { toast('连接失败: ' + e.message, true); }
+catch (e) { setStartReasons([{ code: 'connection', message: '无法读取搜索状态. 请检查工作台服务是否正在运行, 然后刷新状态.' }]); toast('连接失败: ' + e.message, true); }
 setInterval(poll, 5000);
