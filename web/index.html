@@ -36,6 +36,12 @@
           <div class="actions"><button id="export-observation" disabled>导出观测数据</button><button id="import-observation">导入观测数据</button><input id="observation-file" type="file" accept="application/json,.json" hidden></div>
           <p id="observation-status" class="hint" role="status" aria-live="polite"></p><p class="hint">文件仅包含以格为单位的逐列高度 (缺失或作废列为 -999) 和出生点观测列号. 不包含截图, 标定, 拼接, 画布标记或搜索设置. 后续保存人工标注会重新生成观测.</p>
         </div>
+        <div class="panel stack"><h2>保存的搜索任务</h2>
+          <label class="field">任务<select id="search-task"><option value="">尚无搜索任务</option></select></label>
+          <p id="task-detail" class="hint" role="status"></p>
+          <div class="actions"><button id="resume-search" class="primary" disabled>继续此任务</button></div>
+          <p class="hint">继续任务会恢复它保存的观测和参数, 不使用当前表单. 新搜索会创建独立任务, 保留旧任务和候选. 停止时会完成当前工作块并保存; 异常退出后只重算尚未提交的工作块.</p>
+        </div>
         <div id="search-progress" class="panel stack search-progress" hidden>
           <div class="row spread"><div class="row"><strong id="progress-backend"></strong><span id="progress-status" role="status" aria-live="polite"></span></div><strong id="progress-percent" class="progress-percent">0.00%</strong></div>
           <progress id="search-progress-bar" max="1" value="0" aria-label="种子搜索进度" aria-describedby="progress-scanned"></progress>
@@ -51,7 +57,7 @@
         </div>
         <div class="panel stack"><h2>粗筛设置</h2>
           <label class="field">计算方式<select id="search-backend"><option value="webgpu">浏览器 GPU (WebGPU)</option><option value="cpu">主机 CPU</option><option value="cuda">主机 NVIDIA GPU (CUDA)</option></select></label>
-          <p id="gpu-support" class="hint"></p><p class="hint">浏览器 WebGPU 支持 6400 x 1800 中世界和最多 700 个观测列, 每次先校验设备结果再分批搜索. CPU 和 CUDA 在运行工作台服务的主机上计算. 请保持页面打开; 大范围搜索可能耗时很长. 浏览器候选暂存于本页, 刷新前请下载.</p>
+          <p id="gpu-support" class="hint"></p><p class="hint">浏览器 WebGPU 支持 6400 x 1800 中世界和最多 700 个观测列, 每次先校验设备结果再分批搜索. CPU 和 CUDA 在运行工作台服务的主机上计算. 请保持页面打开以继续 WebGPU 计算; 已提交的断点和候选保存在服务端, 刷新后可以继续任务.</p>
           <div class="fields"><label class="field">容差<input type="number" id="tol" value="0.5" step="any" min="0.01" max="10"></label><label class="field">最低得分<input type="number" id="offer" value="0.55" step="any" min="0" max="1"></label></div>
           <details id="search-advanced"><summary>高级参数 (含出生点范围)</summary><div class="fields">
             <label class="field">种子起始值 (包含)<input type="number" id="seed-from" min="0" max="2147483646" step="1" value="0"></label><label class="field">种子结束值 (不含)<input type="number" id="seed-to" min="1" max="2147483647" step="1" value="2147483647"></label>
@@ -61,7 +67,7 @@
           </div><p class="hint">默认参数与此前搜索一致. 搜索尺度调整粗筛的列间距, 不是图片缩放. 出生点观测列来自最终观测数据.</p></details>
           <p class="hint">调低最低得分会保留更多候选.</p>
           <p id="start-reason" class="hint warn" role="status" aria-live="polite">正在读取搜索状态...</p>
-          <div class="actions"><button id="start" class="primary" disabled aria-describedby="start-reason">开始搜索</button><button id="stop" disabled>停止搜索</button><button id="go-candidates">查看候选 →</button></div>
+          <div class="actions"><button id="start" class="primary" disabled aria-describedby="start-reason">开始新搜索</button><button id="stop" disabled>停止搜索</button><button id="go-candidates">查看候选 →</button></div>
         </div>
         <div class="panel stack"><h2>运行输出</h2><pre id="log">搜索尚未启动.</pre></div>
       </div>

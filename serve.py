@@ -24,6 +24,8 @@ import subprocess
 import tempfile
 import observation_archive
 import search_progress
+import search_tasks
+import hashlib
 import sys
 import threading
 import time
@@ -40,9 +42,31 @@ SEARCHER = ROOT / ("sweep2.exe" if os.name == "nt" else "sweep2")
 CPU_SEARCHER = ROOT / ("sweep-cpu.exe" if os.name == "nt" else "sweep-cpu")
 DEFAULT_SEED_RANGE = (0, 2147483647)
 
-STATE_LOCK = threading.Lock()
+STATE_LOCK = threading.RLock()
 FILE_LOCK = threading.RLock()
 SWEEP = {"proc": None, "started": 0.0, "log": None}
+
+
+_TASK_MANAGERS = {}
+
+
+def webgpu_engine_key():
+    return hashlib.sha256(b"".join((ROOT / "web/gpu" / name).read_bytes() for name in ("search.wgsl", "terrain-reference.js", "search-engine.js"))).hexdigest()
+
+
+def task_manager():
+    key = str(WORK.resolve())
+    with STATE_LOCK:
+        if key not in _TASK_MANAGERS:
+            _TASK_MANAGERS[key] = search_tasks.TaskManager(WORK / "tasks", {"cpu": CPU_SEARCHER, "cuda": SEARCHER}, webgpu_engine_key)
+        return _TASK_MANAGERS[key]
+
+
+def task_for_backend(backend, task_id=None):
+    manager = task_manager()
+    if task_id:
+        return manager.summary(task_id)
+    return next((task for task in manager.summaries() if task["backend"] == backend), None)
 
 
 def ensure_dirs():
@@ -271,6 +295,16 @@ class Handler(BaseHTTPRequestHandler):
             candidate_stats = {backend: path.stat() if path.is_file() else None for backend in ("cpu", "cuda") for path in (candidates_path(backend),)}
             candidate_bytes = {backend: info.st_size if info else 0 for backend, info in candidate_stats.items()}
             candidate_versions = {backend: f"{info.st_mtime_ns}:{info.st_size}" if info else "" for backend, info in candidate_stats.items()}
+            tasks = task_manager().summaries()
+            host_tasks = [task for task in tasks if task["backend"] != "webgpu"]
+            sweep_state = {"running": running, "backend": SWEEP.get("backend", "cuda"), "candidate_bytes": candidate_bytes, "candidate_versions": candidate_versions, "progress": progress, "elapsed": round(elapsed, 1), "candidates": cands.stat().st_size if cands.is_file() else 0}
+            if host_tasks and not running:
+                current = next((task for task in host_tasks if task["status"] in ("running", "stopping")), host_tasks[0])
+                sweep_state.update(running=current["status"] in ("running", "stopping"), backend=current["backend"], progress=current["progress"], elapsed=current["progress"]["elapsed"], task_id=current["id"])
+                for backend in ("cpu", "cuda"):
+                    latest = next((task for task in host_tasks if task["backend"] == backend), None)
+                    if latest:
+                        sweep_state["candidate_versions"][backend] = latest["version"]
             return self._send(200, {
                 "frames": [f.name for f in sorted(FRAMES.glob("*")) if f.is_file()],
                 "param": param,
@@ -279,13 +313,26 @@ class Handler(BaseHTTPRequestHandler):
                 "searcher_built": SEARCHER.is_file(),
                 "cpu_searcher_built": CPU_SEARCHER.is_file(),
                 "searcher_paths": {"cuda": str(SEARCHER), "cpu": str(CPU_SEARCHER)},
-                "sweep": {"running": running, "backend": SWEEP.get("backend", "cuda"), "candidate_bytes": candidate_bytes, "candidate_versions": candidate_versions, "progress": progress, "elapsed": round(elapsed, 1),
-                          "candidates": cands.stat().st_size if cands.is_file() else 0},
+                "sweep": sweep_state,
+                "tasks": tasks,
             })
         if p in ("/api/sweep/log", "/api/candidates"):
             backend = (parse_qs(u.query).get("backend") or [SWEEP.get("backend", "cuda")])[0]
-            if backend not in ("cpu", "cuda"):
-                return self._send(400, {"error": "未知主机搜索后端."})
+            if backend not in ("cpu", "cuda", "webgpu"):
+                return self._send(400, {"error": "未知搜索后端."})
+        if p in ("/api/sweep/log", "/api/candidates"):
+            try:
+                selected = task_for_backend(backend, (parse_qs(u.query).get("task") or [None])[0])
+                if selected:
+                    manager = task_manager()
+                    if p == "/api/candidates":
+                        limit = min(2000, max(1, int((parse_qs(u.query).get("limit") or [200])[0])))
+                        return self._send(200, {"rows": manager.lines(selected["id"], limit), "task_id": selected["id"]})
+                    return self._send(200, {"log": manager.log(selected["id"])[-65536:] or selected.get("error") or "等待工作块输出."})
+                if backend == "webgpu":
+                    return self._send(200, {"rows": []} if p == "/api/candidates" else {"log": "尚无浏览器搜索任务."})
+            except ValueError as error:
+                return self._send(400, {"error": str(error)})
         if p == "/api/sweep/log":
             with STATE_LOCK:
                 log = SWEEP["log"] if backend == SWEEP.get("backend", "cuda") else None
@@ -336,10 +383,42 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/observation" and int(self.headers.get("Content-Length") or 0) > observation_archive.MAX_BYTES:
             self.close_connection = True
             return self._send(413, {"ok": False, "error": "观测文件不能超过 8 MiB."})
+        if u.path.startswith("/api/task/") and int(self.headers.get("Content-Length") or 0) > 2 * 1024 * 1024:
+            self.close_connection = True
+            return self._send(413, {"error": "任务请求过大."})
         body = self._json_body()
+        if u.path.startswith("/api/task/"):
+            manager = task_manager()
+            try:
+                if u.path == "/api/task/start":
+                    with STATE_LOCK:
+                        if (SWEEP["proc"] is not None and SWEEP["proc"].poll() is None) or task_manager().busy():
+                            raise ValueError("已有搜索正在运行.")
+                        result = manager.create(body.get("backend", "cuda"), body.get("parameters", {}), export_observation())
+                    return self._send(200, result)
+                task_id = body.get("id")
+                if u.path == "/api/task/resume":
+                    with STATE_LOCK:
+                        if (SWEEP["proc"] is not None and SWEEP["proc"].poll() is None) or task_manager().busy():
+                            raise ValueError("已有搜索正在运行.")
+                        result = manager.resume(task_id)
+                    return self._send(200, result)
+                if u.path == "/api/task/stop":
+                    manager.stop(task_id)
+                elif u.path == "/api/task/heartbeat":
+                    return self._send(200, manager.heartbeat(task_id, body.get("owner")))
+                elif u.path == "/api/task/commit":
+                    return self._send(200, manager.browser_commit(task_id, body))
+                elif u.path == "/api/task/finish":
+                    manager.browser_finish(task_id, body.get("owner"), bool(body.get("failed")))
+                else:
+                    return self._send(404, {"error": "未知任务操作."})
+                return self._send(200, {"ok": True})
+            except (ValueError, OSError) as error:
+                return self._send(409, {"error": str(error)})
         if u.path == "/api/observation":
             with STATE_LOCK:
-                if SWEEP["proc"] is not None and SWEEP["proc"].poll() is None:
+                if (SWEEP["proc"] is not None and SWEEP["proc"].poll() is None) or task_manager().busy():
                     return self._send(409, {"ok": False, "error": "请先停止搜索, 再导入观测数据."})
                 try:
                     meta = import_observation(body)
@@ -362,7 +441,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"ok": True, "observed": meta})
         if u.path == "/api/sweep":
             with STATE_LOCK:
-                if SWEEP["proc"] is not None and SWEEP["proc"].poll() is None:
+                if (SWEEP["proc"] is not None and SWEEP["proc"].poll() is None) or task_manager().busy():
                     return self._send(409, {"ok": False, "error": "已有搜索在跑"})
                 if not (DATA / "observed.txt").is_file():
                     return self._send(400, {"ok": False, "error": "还没有标注, 先完成标注"})

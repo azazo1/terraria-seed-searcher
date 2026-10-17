@@ -60,10 +60,15 @@ function environment(html, store) {
       if (url === '/api/observation') {
         store.observation = structuredClone(data); store.observed = { columns: data.heights.length, valid: data.heights.filter(y => y !== -999).length, marker: data.marker, source: 'import', step_rate: 10 };
       }
+      if (url === '/api/task/start' || url === '/api/task/resume') {
+        const task = url.endsWith('/resume') ? store.tasks.find(task => task.id === data.id) : { id: 'synthetic-task', backend: data.backend, parameters: data.parameters, next: data.parameters.range[0], status: 'paused', progress: { status: 'stopped', scanned: 0, total: data.parameters.range[1] - data.parameters.range[0], elapsed: 0 }, compatible: true, version: '1' };
+        store.tasks = [task];
+        return { ok: true, json: async () => ({ task, observation: store.observation, parameters: task.parameters, owner: 'synthetic-owner', rows: [], elapsed: 0, matched: 0 }) };
+      }
       return { ok: true, json: async () => ({ ok: true, observed: data.cols?.length ? { valid: data.cols.length, step_rate: 10 } : null }) };
     }
     if (store.readFailure?.url === url) return { ok: false, status: store.readFailure.status, json: async () => ({ error: store.readFailure.error }) };
-    const data = url === '/api/state' ? { frames: store.names, param: store.param, marks: { columns: store.marks?.cols?.length || 0 }, observed: store.observed || null, searcher_built: !!store.searcher_built, cpu_searcher_built: !!store.cpu_searcher_built, searcher_paths: store.searcher_paths, sweep: { running: !!store.running, candidates: 0, ...store.sweep } } : url === '/api/observation' ? store.observation : url.startsWith('/api/sweep/log') ? { log: '' } : url.startsWith('/api/candidates') ? { rows: store.candidates || [] } : url === '/frames' ? store.names : url === '/data/param.json' ? store.param : url === '/data/marks.json' ? store.marks : null;
+    const data = url === '/api/state' ? { frames: store.names, param: store.param, marks: { columns: store.marks?.cols?.length || 0 }, observed: store.observed || null, tasks: store.tasks || [], searcher_built: !!store.searcher_built, cpu_searcher_built: !!store.cpu_searcher_built, searcher_paths: store.searcher_paths, sweep: { running: !!store.running, candidates: 0, ...store.sweep } } : url === '/api/observation' ? store.observation : url.startsWith('/api/sweep/log') ? { log: '' } : url.startsWith('/api/candidates') ? { rows: store.candidates || [] } : url === '/frames' ? store.names : url === '/data/param.json' ? store.param : url === '/data/marks.json' ? store.marks : null;
     return { ok: !!data, status: data ? 200 : 404, json: async () => structuredClone(data || { error: 'not found: ' + url.split('/').pop() }) };
   };
   const names = ['document', 'Image', 'fetch', 'window', 'parent', 'location', 'ResizeObserver', 'devicePixelRatio', 'requestAnimationFrame', 'addEventListener', 'confirm', 'history', 'setInterval'];
@@ -424,7 +429,7 @@ test('最终观测可无截图导入导出, 不改变画布或搜索设置, 仅�
     globalThis.confirm = () => false; await upload(JSON.stringify({ ...observation, marker: 3 })); assert.equal(env.post.length, count); globalThis.confirm = () => true;
     store.fail = true; await upload(JSON.stringify({ ...observation, marker: 3 })); assert.deepEqual(store.observation, observation); store.fail = false;
     let readLarge = false; file.files = [{ size: 8 * 1024 * 1024 + 1, text: async () => { readLarge = true; return ''; } }]; await file.fire('change'); assert.equal(readLarge, false);
-    await get('start').click(); const starts = env.post.filter(post => post.url === '/api/sweep'); assert.equal(starts.length, 1); assert.deepEqual(starts[0].data, { ...DEFAULT_SEARCH_PARAMETERS, tol: .35 });
+    await get('start').click(); const starts = env.post.filter(post => post.url === '/api/task/start'); assert.equal(starts.length, 1); assert.deepEqual(starts[0].data, { backend: 'cuda', parameters: { ...DEFAULT_SEARCH_PARAMETERS, tol: .35 } });
     store.running = true; await get('refresh').click(); assert.equal(get('import-observation').disabled, true);
   } finally { URL.createObjectURL = createURL; env.restore(); }
 });
@@ -458,9 +463,25 @@ test('计算后端可手动选择主机 CPU 或 CUDA, CPU 请求主机接口且�
     store.observed = { valid: 30, columns: 30, marker: 2, source: 'import' }; store.running = true; await get('refresh').click(); assert.equal(reason.dataset.reasons, 'running');
     store.running = false; await get('refresh').click();
     backend.value = 'cpu'; await backend.fire('change'); assert.equal(get('start').disabled, false); assert.equal(reason.hidden, true);
-    await get('start').click(); const starts = env.post.filter(row => row.url === '/api/sweep'); assert.equal(starts.length, 1); assert.equal(starts[0].data.backend, 'cpu'); assert.equal(starts[0].data.tol, .5);
+    await get('start').click(); const starts = env.post.filter(row => row.url === '/api/task/start'); assert.equal(starts.length, 1); assert.equal(starts[0].data.backend, 'cpu'); assert.equal(starts[0].data.parameters.tol, .5);
     backend.value = 'webgpu'; await backend.fire('change'); assert.equal(get('start').disabled, true); assert.equal(reason.dataset.reasons, 'webgpu-unavailable'); assert.equal(reason.hidden, false);
     assert.equal(env.elements.some(element => element.tagName === 'IFRAME'), false);
+  } finally { env.restore(); }
+});
+
+test('恢复保存的任务使用任务参数, 不依赖当前观测或表单', async () => {
+  const task = { id: 'saved-task', backend: 'cpu', parameters: { ...DEFAULT_SEARCH_PARAMETERS, range: [100, 200], tol: .25 }, next: 150, status: 'paused', can_resume: true, compatible: true, version: '1', progress: { status: 'stopped', scanned: 50, total: 100, elapsed: 10, candidates: 2 } };
+  const store = { names: [], observed: null, cpu_searcher_built: true, tasks: [task] }, env = environment(await readFile(new URL('../web/index.html', import.meta.url), 'utf8'), store);
+  try {
+    globalThis.location.hash = '#search'; await import('../web/app.js?resume-task=' + Date.now()); await env.ids.get('refresh').click();
+    const get = id => env.ids.get(id);
+    get('search-task').value = task.id; await get('search-task').fire('change');
+    assert.equal(get('start').disabled, true); assert.equal(get('resume-search').disabled, false);
+    get('tol').value = '.9'; await get('resume-search').click();
+    const resumes = env.post.filter(row => row.url === '/api/task/resume');
+    assert.deepEqual(resumes.map(row => row.data), [{ id: task.id }]);
+    assert.equal(Number(get('tol').value), .25); assert.equal(get('seed-from').value, '100');
+    assert.equal(get('search-progress-bar').value, .5);
   } finally { env.restore(); }
 });
 

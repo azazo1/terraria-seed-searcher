@@ -43,6 +43,32 @@ class PipelineTest(unittest.TestCase):
         with urlopen(req, timeout=3) as response:
             return response.status, response.read()
 
+    def test_saved_browser_task_survives_service_restart_and_uses_its_original_observation(self):
+        work = serve.WORK / "task-api-fixture"
+        with patch.object(serve, "WORK", work):
+            serve.ensure_dirs()
+            observation = {"format": observation_archive.FORMAT, "version": 1, "heights": [0] * 30, "marker": 10}
+            self.call("/api/observation", observation)
+            _, raw = self.call("/api/task/start", {"backend": "webgpu", "parameters": {"range": [100, 110]}})
+            payload = json.loads(raw); task_id = payload["task"]["id"]; owner = payload["owner"]
+            self.call("/api/task/commit", {"id": task_id, "owner": owner, "from": 100, "next": 104, "candidates": [{"seed": 102, "spawn": 3200, "scale": 1, "score": .8}]})
+            self.call("/api/task/finish", {"id": task_id, "owner": owner})
+            self.call("/api/observation", {**observation, "marker": 12})
+            serve._TASK_MANAGERS.pop(str(work.resolve()))
+            _, raw = self.call("/api/task/resume", {"id": task_id})
+            resumed = json.loads(raw)
+            self.assertEqual(resumed["observation"], observation)
+            self.assertEqual(resumed["task"]["next"], 104)
+            self.assertEqual(resumed["rows"][0]["seed"], 102)
+            with self.assertRaises(HTTPError) as error:
+                self.call("/api/task/commit", {"id": task_id, "owner": owner, "from": 104, "next": 105, "candidates": []})
+            self.assertEqual(error.exception.code, 409); error.exception.close()
+            self.call("/api/task/finish", {"id": task_id, "owner": resumed["owner"]})
+            _, raw = self.call("/api/state")
+            self.assertTrue(json.loads(raw)["tasks"][0]["can_resume"])
+            _, raw = self.call("/api/candidates?backend=webgpu&task=" + task_id)
+            self.assertEqual(len(json.loads(raw)["rows"]), 1)
+
     def test_unicode_image_and_delete(self):
         name = "测试 截图 50%.png"
         image = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")

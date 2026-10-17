@@ -6,5 +6,10 @@ export function bindSearchParameters() {
   const number = id => { const value = get(id).value.trim(); if (!value) throw new Error('搜索参数不能留空.'); return Number(value); };
   for (const [key, id] of Object.entries(inputIds)) get(id).value = String(DEFAULT_SEARCH_PARAMETERS[key]);
   get('seed-from').value = String(DEFAULT_SEARCH_PARAMETERS.range[0]); get('seed-to').value = String(DEFAULT_SEARCH_PARAMETERS.range[1]);
-  return { read: () => normalizeSearchParameters({ ...Object.fromEntries(Object.entries(inputIds).map(([key, id]) => [key, key === 'scales' ? get(id).value : number(id)])), range: [number('seed-from'), number('seed-to')] }) };
+  const write = raw => {
+    const parameters = normalizeSearchParameters(raw);
+    for (const [key, id] of Object.entries(inputIds)) get(id).value = String(parameters[key]);
+    get('seed-from').value = String(parameters.range[0]); get('seed-to').value = String(parameters.range[1]);
+  };
+  return { write, read: () => normalizeSearchParameters({ ...Object.fromEntries(Object.entries(inputIds).map(([key, id]) => [key, key === 'scales' ? get(id).value : number(id)])), range: [number('seed-from'), number('seed-to')] }) };
 }

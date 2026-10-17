@@ -14,7 +14,7 @@ const labels = {
   candidates: ['查看候选', '查看搜索产出的候选记录.']
 };
 let active = 'import', state = null, switching = false, polling = false, uploading = false, transferring = false, startingSearch = false;
-let frameKey = '', candidateKey = '', lastRun = false, stateRequest = 0;
+let frameKey = '', candidateKey = '', lastRun = false, stateRequest = 0, selectedTaskId = '', taskListKey = '';
 const editors = new Map();
 const searchParameters = bindSearchParameters();
 const browserSearch = new SearchSession(() => {
@@ -23,12 +23,25 @@ const browserSearch = new SearchSession(() => {
 });
 const browserMode = () => $('search-backend').value === 'webgpu';
 const candidateSize = st => st?.sweep?.candidate_bytes?.[$('search-backend').value] ?? st?.sweep?.candidates;
-const candidateVersion = st => String(st?.sweep?.candidate_versions?.[$('search-backend').value] ?? candidateSize(st));
+const selectedTask = st => st?.tasks?.find(task => task.id === selectedTaskId);
+const taskQuery = () => selectedTaskId ? '&task=' + encodeURIComponent(selectedTaskId) : '';
+const candidateVersion = st => selectedTask(st)?.version ?? String(st?.sweep?.candidate_versions?.[$('search-backend').value] ?? candidateSize(st));
 let loadingCandidates = false;
 const webGpuSupported = !!globalThis.navigator?.gpu && !!globalThis.isSecureContext;
 $('search-backend').value = webGpuSupported ? 'webgpu' : 'cuda';
-$('search-backend').onchange = () => { if (state) renderState(state); loadLog().catch(error => toast(error.message, true)); candidateKey = ''; if (active === 'candidates') loadCandidates(true).catch(error => toast(error.message, true)); };
-$('download-browser-candidates').onclick = () => browserSearch.download();
+$('search-backend').onchange = () => { selectedTaskId = state?.tasks?.find(task => task.backend === $('search-backend').value)?.id || ''; if (state) renderState(state); loadLog().catch(error => toast(error.message, true)); candidateKey = ''; if (active === 'candidates') loadCandidates(true).catch(error => toast(error.message, true)); };
+$('search-task').onchange = () => {
+  selectedTaskId = $('search-task').value; const task = selectedTask(state);
+  if (task) $('search-backend').value = task.backend;
+  candidateKey = ''; if (state) renderState(state); loadLog().catch(error => toast(error.message, true));
+  if (active === 'candidates') loadCandidates(true).catch(error => toast(error.message, true));
+};
+$('download-browser-candidates').onclick = async () => {
+  try {
+    const rows = browserSearch.taskId === selectedTaskId ? browserSearch.lines() : (await request('/api/candidates?backend=webgpu&limit=2000' + taskQuery())).rows;
+    browserSearch.download(rows);
+  } catch (error) { toast('下载失败: ' + error.message, true); }
+};
 addEventListener('beforeunload', event => { if (browserSearch.running) { event.preventDefault(); event.returnValue = ''; } });
 bindObservationTransfer({
   run: transferObservation,
@@ -141,9 +154,26 @@ function setStartReasons(reasons) {
   for (const reason of reasons) { const line = document.createElement('span'); line.style.display = 'block'; line.textContent = reason.message; notice.append(line); }
   $('start').disabled = !!reasons.length;
 }
+function renderTasks(st) {
+  const tasks = st.tasks || [], live = tasks.find(task => ['running', 'stopping'].includes(task.status));
+  if (live) { selectedTaskId = live.id; $('search-backend').value = live.backend; }
+  else if (!selectedTaskId && !taskListKey && tasks.length) { selectedTaskId = tasks[0].id; $('search-backend').value = tasks[0].backend; }
+  const key = JSON.stringify(tasks.map(task => [task.id, task.status]));
+  if (key !== taskListKey) {
+    taskListKey = key; $('search-task').replaceChildren();
+    const statuses = { running: '运行中', stopping: '正在保存并停止', paused: '已暂停', interrupted: '意外中断', completed: '已完成', failed: '失败, 可重试' };
+    const empty = document.createElement('option'); empty.value = ''; empty.textContent = tasks.length ? '选择已保存的任务' : '尚无搜索任务'; $('search-task').append(empty);
+    for (const task of tasks) { const option = document.createElement('option'); option.value = task.id; option.textContent = `${task.id.slice(0, 8)} / ${task.backend} / ${statuses[task.status] || task.status} / ${task.parameters.range.join('..')}`; $('search-task').append(option); }
+  }
+  $('search-task').value = selectedTaskId;
+  $('search-task').disabled = !!live || browserSearch.running || startingSearch || transferring;
+  const task = selectedTask(st);
+  $('resume-search').disabled = !task?.can_resume || task?.backend === 'webgpu' && !webGpuSupported || !!live || browserSearch.running || startingSearch || transferring;
+  $('task-detail').textContent = task ? `已保存 ${task.next - task.parameters.range[0]} / ${task.parameters.range[1] - task.parameters.range[0]} 个种子, 安全续跑位置 ${task.next}. ${!task.compatible ? '搜索器版本已变化, 请创建新任务. ' : task.backend === 'webgpu' && !webGpuSupported ? '当前浏览器不支持 WebGPU, 请换用支持的浏览器继续. ' : ''}${task.error || ''}` : '新搜索会自动保存独立任务和断点.';
+}
 function renderState(st) {
   if (st.param) st = { ...st, param: migrateParam(st.param) };
-  state = st; $('connection').textContent = '已连接 · ' + new Date().toLocaleTimeString('zh-CN', { hour12: false });
+  state = st; renderTasks(st); $('connection').textContent = '已连接 · ' + new Date().toLocaleTimeString('zh-CN', { hour12: false });
   const names = st.frames || [], key = JSON.stringify(names);
   if (key !== frameKey) { frameKey = key; renderFrames(names); }
   $('frame-count').textContent = `${names.length} 张`; $('go-grid').disabled = !names.length || uploading;
@@ -159,7 +189,7 @@ function renderState(st) {
   $('diagnostic').textContent = obs ? `台阶率 ${obs.step_rate}%. ${obs.step_rate < 3 ? '偏低, 建议检查格宽.' : obs.step_rate > 20 ? '偏高, 建议检查标注.' : '可回到标注步骤继续检查.'}` : '请先在标注步骤标出地表, 观测会自动生成.';
   if (obs?.source === 'import') $('diagnostic').textContent = `台阶率 ${obs.step_rate}%. 已导入最终观测, 无需截图或标注画布即可搜索.`;
   if (sweep.running) $('search-backend').value = sweep.backend || 'cuda';
-  const backend = $('search-backend').value, local = browserMode(), running = sweep.running || browserSearch.running;
+  const backend = $('search-backend').value, local = browserMode(), running = sweep.running || browserSearch.running || st.tasks?.some(task => ['running', 'stopping'].includes(task.status));
   $('gpu-support').textContent = backend === 'webgpu' ? webGpuSupported ? '已检测到 WebGPU 接口, 开始时会申请设备并验证内核. 无需 CUDA.' : '当前环境未提供 WebGPU. 可手动选择 CPU 或 CUDA.' : backend === 'cpu' ? st.cpu_searcher_built ? '使用运行工作台服务的主机 CPU, 无需 GPU 或 CUDA.' : '主机 CPU 搜索器未编译, 请先运行 just build-cpu.' : '调用运行工作台服务的机器上的 NVIDIA CUDA 搜索器.';
   $('nav-search').textContent = running ? '搜索进行中' : obs ? '观测已就绪' : '等待标注';
   const reasons = [];
@@ -173,8 +203,9 @@ function renderState(st) {
   setStartReasons(reasons);
   $('stop').disabled = !running; $('search-backend').disabled = running || transferring || startingSearch;
   $('export-observation').disabled = startingSearch || transferring || running || !obs; $('import-observation').disabled = startingSearch || transferring || running;
-  $('download-browser-candidates').disabled = !browserSearch.rows.length;
-  renderSearchProgress($, local ? browserSearch.progress : backend === sweep.backend ? sweep.progress : null, backend);
+  $('download-browser-candidates').disabled = !local || !(browserSearch.taskId === selectedTaskId && browserSearch.rows.length || selectedTask(st)?.progress.candidates);
+  const task = selectedTask(st), ownBrowser = local && browserSearch.taskId === selectedTaskId && browserSearch.hasRun;
+  renderSearchProgress($, task ? ownBrowser && browserSearch.running ? browserSearch.progress : task.progress : local ? browserSearch.progress : backend === sweep.backend ? sweep.progress : null, backend);
   if (local) {
     $('nav-candidates').textContent = browserSearch.hasRun ? `${browserSearch.rows.length} 条浏览器候选` : '暂无浏览器候选';
     kv($('search-info'), [['计算方式', '浏览器 GPU / WebGPU'], ['观测', obs ? `${obs.valid} 个有效列 / ${obs.columns} 列` : '尚无有效观测'], ['出生点列', obs?.marker ?? '-'], ['状态', browserSearch.running ? '运行中' : '空闲']]);
@@ -182,6 +213,7 @@ function renderState(st) {
     $('nav-candidates').textContent = candidateSize(st) ? `${Math.round(candidateSize(st) / 1024)} KB CPU 结果` : '暂无 CPU 候选';
     kv($('search-info'), [['计算方式', '主机 CPU'], ['搜索器', st.cpu_searcher_built ? '已编译' : '未编译, 请先运行 just build-cpu'], ['观测', obs ? `${obs.valid} 个有效列 / ${obs.columns} 列` : '尚无有效观测'], ['出生点列', obs?.marker ?? '-'], ['状态', sweep.running ? `运行中 ${duration(sweep.elapsed)}` : '空闲']]);
   }
+  if (task) $('nav-candidates').textContent = `${task.backend} 累计 ${task.progress.candidates || 0} 个候选`;
   if ((active === 'search' && sweep.running) || (lastRun && !sweep.running)) loadLog().catch(e => toast(e.message, true));
   if (active === 'candidates' && candidateVersion(st) !== candidateKey) loadCandidates().catch(e => toast(e.message, true));
   lastRun = !!sweep.running;
@@ -248,43 +280,61 @@ addEventListener('paste', e => {
   if (images.length && active === 'import') { e.preventDefault(); importFiles(images); }
 });
 async function loadLog() {
-  if (browserMode()) { $('log').textContent = browserSearch.messages.join('\n') || '浏览器搜索尚未启动.'; return; }
-  const backend = $('search-backend').value, result = await request('/api/sweep/log?backend=' + backend);
+  if (browserMode() && (!selectedTaskId || browserSearch.taskId === selectedTaskId)) { $('log').textContent = browserSearch.messages.join('\n') || '浏览器搜索尚未启动.'; return; }
+  const backend = $('search-backend').value, result = await request('/api/sweep/log?backend=' + backend + taskQuery());
   if ($('search-backend').value === backend) $('log').textContent = result.log || '暂无搜索输出.';
 }
 async function loadCandidates(force = false) {
-  const local = browserMode(), backend = $('search-backend').value;
+  const local = browserMode() && (!selectedTaskId || browserSearch.taskId === selectedTaskId), backend = $('search-backend').value, taskId = selectedTaskId;
   if (loadingCandidates || (!local && !force && candidateKey === candidateVersion(state))) return;
   const version = candidateVersion(state);
   loadingCandidates = true;
   let result;
-  try { result = local ? { rows: browserSearch.lines().slice(0, 200) } : await request('/api/candidates?backend=' + backend); }
+  try { result = local ? { rows: browserSearch.lines().slice(0, 200) } : await request('/api/candidates?backend=' + backend + taskQuery()); }
   finally { loadingCandidates = false; }
-  if ($('search-backend').value !== backend) return;
+  if ($('search-backend').value !== backend || taskId !== selectedTaskId) return;
   candidateKey = version;
   $('candidates').replaceChildren();
   for (const [index, row] of (result.rows || []).entries()) { const tr = document.createElement('tr'), rank = document.createElement('td'), value = document.createElement('td'); rank.textContent = index + 1; value.textContent = row; tr.append(rank, value); $('candidates').append(tr); }
-  const live = local ? browserSearch.running : state?.sweep?.running && state.sweep.backend === backend;
+  const live = selectedTask(state) ? ['running', 'stopping'].includes(selectedTask(state).status) : local ? browserSearch.running : state?.sweep?.running && state.sweep.backend === backend;
   $('candidate-hint').textContent = result.rows?.length ? `显示前 ${result.rows.length} 条候选. ${live ? '搜索中自动刷新, 高分候选可能替换已有记录. ' : ''}需要结合游戏内地形进一步核对.` : live ? '搜索进行中, 暂无已发布的候选. 本页会自动刷新.' : '暂无候选. 完成标注并运行搜索后会在这里显示.';
 }
-$('start').onclick = async () => {
-  if (startingSearch || browserSearch.running || state?.sweep?.running || transferring) return;
-  startingSearch = true; if (state) renderState(state); $('start').disabled = true;
+async function startTask(resume = false) {
+  if (startingSearch || browserSearch.running || state?.sweep?.running || state?.tasks?.some(task => ['running', 'stopping'].includes(task.status)) || transferring) return;
+  startingSearch = true; if (state) renderState(state);
+  let launched;
   try {
-    const parameters = searchParameters.read(), backend = $('search-backend').value;
-    if (backend === 'webgpu') {
-      const observation = await request('/api/observation');
-      const running = browserSearch.start(observation, parameters); startingSearch = false; await running;
-    } else {
-      if ((state?.observed?.valid || 0) < 20 || state?.observed?.columns > 700) throw new Error('粗筛需要至少 20 个有效观测列, 总列数不能超过 700.');
-      await request('/api/sweep', backend === 'cpu' ? { ...parameters, backend } : parameters); await refreshState(); await loadLog();
-    }
-  } catch (error) { toast('启动失败: ' + error.message, true); }
+    const payload = await request(resume ? '/api/task/resume' : '/api/task/start', resume ? { id: selectedTaskId } : { backend: $('search-backend').value, parameters: searchParameters.read() });
+    launched = payload;
+    const { task, observation, parameters, owner } = payload;
+    selectedTaskId = task.id; $('search-backend').value = task.backend; searchParameters.write(parameters); candidateKey = '';
+    await refreshState();
+    if (task.backend === 'webgpu') {
+      const identity = { id: task.id, owner };
+      const running = browserSearch.start(observation, parameters, {
+        id: task.id, next: task.next, matched: payload.matched, elapsed: payload.elapsed,
+        rows: payload.rows.map(row => ({ ...row, score: row.score / 10000000 })),
+        commit: block => request('/api/task/commit', { ...identity, ...block }),
+        heartbeat: () => request('/api/task/heartbeat', identity),
+        finish: failed => request('/api/task/finish', { ...identity, failed })
+      });
+      startingSearch = false; await running;
+    } else await loadLog();
+  } catch (error) {
+    if (launched?.task.backend === 'webgpu') { try { await request('/api/task/finish', { id: launched.task.id, owner: launched.owner, failed: true }); } catch { /* 会话可能已经释放, 失联时由服务回收. */ } }
+    toast((resume ? '恢复失败: ' : '启动失败: ') + error.message, true);
+  }
   finally { startingSearch = false; if (state) renderState(state); await poll(); }
-};
+}
+$('start').onclick = () => startTask();
+$('resume-search').onclick = () => startTask(true);
 $('stop').onclick = async () => {
-  if (browserSearch.running) { browserSearch.stop(); return; }
-  $('stop').disabled = true; try { await request('/api/sweep/stop', {}); await refreshState(); await loadLog(); } catch (error) { toast('停止失败: ' + error.message, true); }
+  $('stop').disabled = true;
+  if (browserSearch.running) browserSearch.stop();
+  try {
+    await request(selectedTaskId ? '/api/task/stop' : '/api/sweep/stop', selectedTaskId ? { id: selectedTaskId } : {});
+    await refreshState(); await loadLog();
+  } catch (error) { toast('停止失败: ' + error.message, true); }
 };
 $('refresh').onclick = async () => { try { await flushCurrent(); await refreshState(); toast(''); } catch (e) { toast(e.message, true); } };
 $('refresh-candidates').onclick = () => loadCandidates(true).catch(e => toast(e.message, true));

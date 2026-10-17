@@ -9,6 +9,7 @@ import { migrateParam, PARAM_VERSION } from '../web/frame-schema.js';
 import { DEFAULT_SEARCH_PARAMETERS, normalizeSearchParameters } from '../web/search-parameters.js';
 import { prepareSearch, scoreProfile, terrainProfile } from '../web/gpu/terrain-reference.js';
 import { SearchSession } from '../web/gpu/search-session.js';
+import { BrowserSearch } from '../web/gpu/search-engine.js';
 
 test('浏览器搜索限制中世界和观测长度, 正确匹配合成地形且忽略缺失列', () => {
   const profile = terrainProfile(42, 3400), obs = { heights: Array.from(profile.slice(3100, 3196), (v, i) => i % 7 === 0 ? -999 : (v - profile[3100]) / 8 + 30), marker: 100 };
@@ -26,6 +27,30 @@ test('浏览器搜索会话保留候选, 报告进度并在失败或停止后释
   assert.equal(session.progress.status, 'completed'); assert.equal(session.progress.scanned, 5); assert.equal(session.progress.total, 5); assert.equal(session.progress.candidates, 2); assert.ok(Number.isFinite(session.progress.elapsed) && session.progress.elapsed >= 0);
   fake.selfTest = async () => { throw new Error('probe failed'); }; await assert.rejects(session.start(obs, settings), /probe failed/); assert.equal(session.running, false); assert.equal(destroyed, 2); assert.equal(session.rows.length, 0); assert.equal(session.progress.status, 'failed'); assert.equal(session.progress.scanned, 0);
   fake.selfTest = async () => { session.stop(); return null; }; await session.start(obs, settings); assert.equal(destroyed, 3); assert.equal(session.running, false); assert.equal(session.progress.status, 'stopped');
+});
+
+test('浏览器恢复从安全断点运行, 保存失败不推进本地候选和进度', async () => {
+  const obs = { heights: Array(30).fill(0), marker: 10 }, parameters = { ...DEFAULT_SEARCH_PARAMETERS, range: [100, 110] }, commits = [], finished = [];
+  const engine = { cancelled: false, initialize: async () => {}, selfTest: async () => ({}), destroy() {}, stop() { this.cancelled = true; }, run: async (_obs, settings, progress) => {
+    assert.deepEqual(settings.range, [104, 110]);
+    await progress({ next: 110, scanned: 6, total: 6, batch: 6, elapsed: .1, candidates: [{ seed: 109, score: 1, spawn: 3200, scale: 1 }] });
+    return { next: 110, scanned: 6, cancelled: false };
+  } };
+  const session = new SearchSession(() => {}, () => engine), persistence = { id: 'task', next: 104, elapsed: 12, matched: 2, rows: [{ seed: 102, score: .7, spawn: 3200, scale: 1 }], heartbeat: async () => ({}), commit: async block => { commits.push(block); return {}; }, finish: async failed => finished.push(failed) };
+  await session.start(obs, parameters, persistence);
+  assert.equal(commits[0].from, 104); assert.equal(session.progress.scanned, 10); assert.equal(session.progress.total, 10); assert.equal(session.progress.candidates, 3); assert.ok(session.progress.elapsed >= 12); assert.deepEqual(session.rows.map(row => row.seed), [109, 102]); assert.deepEqual(finished, [false]);
+  await assert.rejects(session.start(obs, parameters, { ...persistence, commit: async () => { throw new Error('offline'); } }), /offline/);
+  assert.equal(session.progress.scanned, 4); assert.equal(session.progress.status, 'failed'); assert.deepEqual(session.rows.map(row => row.seed), [102]); assert.deepEqual(finished, [false, true]);
+});
+
+test('浏览器必须等待工作块保存确认, 保存失败后不派发下一批', async () => {
+  const engine = new BrowserSearch(); engine.device = { limits: { maxStorageBufferBindingSize: 10000000, maxComputeWorkgroupsPerDimension: 65535 } };
+  let dispatches = 0, rejectCommit, entered;
+  const ready = new Promise(resolve => { entered = resolve; });
+  engine.dispatch = async (_start, count) => { dispatches++; return new Uint32Array(count * 2); };
+  const pending = engine.run({ heights: Array(30).fill(0), marker: 10 }, { ...DEFAULT_SEARCH_PARAMETERS, range: [100, 164] }, () => { entered(); return new Promise((_resolve, reject) => { rejectCommit = reject; }); });
+  const rejected = assert.rejects(pending, /offline/);
+  await ready; assert.equal(dispatches, 1); rejectCommit(new Error('offline')); await rejected; assert.equal(dispatches, 1);
 });
 
 test('粗筛设置保留数值校验, 拒绝错误类型和范围', () => {

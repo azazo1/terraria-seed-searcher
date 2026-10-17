@@ -78,7 +78,7 @@ export class BrowserSearch {
         candidates.push({ seed: next + index, score, spawn: prepared.base + Math.floor(q / prepared.scales.length) + prepared.marker, scale: prepared.scales[q % prepared.scales.length] });
       }
       next += count; scanned += count;
-      onProgress({ next, scanned, total: to - from, elapsed: (performance.now() - started) / 1000, candidates, batch: count });
+      await onProgress({ next, scanned, total: to - from, elapsed: (performance.now() - started) / 1000, candidates, batch: count });
       const elapsed = performance.now() - before; batch = elapsed > 150 ? Math.max(1, Math.floor(count / 2)) : elapsed < 40 ? Math.min(maximum, count * 2) : count;
       await new Promise(resolve => setTimeout(resolve, 0));
     }
