@@ -1,5 +1,8 @@
 // 中世界粗筛: 整数随机数, 单次地形生成, 并行偏移评分.
-struct Settings { start: u32, count: u32, cols: u32, obs_n: u32, scale_n: u32, lo: i32, hi: i32, base: i32, combinations: u32, radius: i32, pad0: u32, pad1: u32 }
+// 后 12 个字段是世界几何, 与 terrain-reference.js 的 WORLDS 和 src/world-geometry.h 对应.
+struct Settings { start: u32, count: u32, cols: u32, obs_n: u32, scale_n: u32, lo: i32, hi: i32, base: i32, combinations: u32, radius: i32,
+  world_w: i32, roll_lo: i32, roll_hi: i32, plateau_lo: i32, plateau_hi: i32, surf_min: i32, surf_beach: i32, surf_max: i32,
+  dungeon_lo0: i32, dungeon_hi0: i32, dungeon_lo1: i32, dungeon_hi1: i32, surf_min_eps: i32 }
 @group(0) @binding(0) var<uniform> cfg: Settings;
 @group(0) @binding(1) var<storage, read> observed: array<i32>;
 @group(0) @binding(2) var<storage, read> shifts: array<i32>;
@@ -56,12 +59,12 @@ fn setup_beach(seed: i32) -> vec2<i32> {
   if (next_rng(6) == 5) { _ = next_rng(2); } _ = next_rng(7); var snow = next_rng(9);
   for (var j = 2; j <= 4; j++) { if (snow == j && next_rng(2) == 0) { if (next_rng(2) == 0) { snow = j * 10 + 1; } else { snow = j * 10 + 2; } } }
   _ = next_rng(6); _ = next_rng(7); if (next_rng(6) == 5) { _ = next_rng(5); } _ = next_rng(8); _ = next_rng(5); _ = next_rng(3); _ = next_rng(9);
-  let side = next_rng(2); _ = between_rng(15, 30); var dungeon = next_rng(6400);
-  let low = select(1600, 3840, side == 1); let high = select(2560, 4800, side == 1);
-  while (dungeon < low || dungeon > high) { dungeon = next_rng(6400); }
+  let side = next_rng(2); _ = between_rng(15, 30); var dungeon = next_rng(cfg.world_w);
+  let low = select(cfg.dungeon_lo0, cfg.dungeon_lo1, side == 1); let high = select(cfg.dungeon_hi0, cfg.dungeon_hi1, side == 1);
+  while (dungeon < low || dungeon > high) { dungeon = next_rng(cfg.world_w); }
   for (var j = 0u; j < 2u; j++) { _ = between_rng(50, 90); _ = between_rng(20, 40); _ = between_rng(20, 40); }
   let left = between_rng(300, 340) + select(20, 40, side == 1);
-  let right = 6400 - between_rng(300, 340) - select(40, 20, side == 1); return vec2<i32>(left, right);
+  let right = cfg.world_w - between_rng(300, 340) - select(40, 20, side == 1); return vec2<i32>(left, right);
 }
 fn surface_offset(kind: i32) -> i32 {
   var v = 0;
@@ -73,18 +76,24 @@ fn surface_offset(kind: i32) -> i32 {
 fn profile_main(@builtin(global_invocation_id) id: vec3<u32>) {
   let index = id.x; if (index >= cfg.count) { return; } let seed = i32(cfg.start + index); let beaches = setup_beach(seed); seed_rng(seed);
   _ = between_rng(90, 110); _ = between_rng(90, 110);
-  // 中世界初始地表恒低于海滩下限, 首列必定限制为 306. 此后只做整数增减.
-  var surface = 0; var remaining = beaches.x + 5; var kind = 0; let width = u32(cfg.hi - cfg.lo);
+  // 初始地表恒低于海滩下限, 首列必定钳到下限; 下限不是整数时用 above 记住那一格.
+  var tile = cfg.surf_min; var above = cfg.surf_min_eps != 0;
+  var remaining = beaches.x + 5; var kind = 0; let width = u32(cfg.hi - cfg.lo);
   for (var x = 0; x < i32(cfg.cols); x++) {
     if (remaining <= 0) { kind = next_rng(5); remaining = between_rng(5, 40); if (kind == 0) { remaining *= between_rng(5, 30) / 5; } }
     remaining--;
-    if (x > 2880 && x < 3520 && (kind == 3 || kind == 4)) { kind = next_rng(3); }
-    if (x > 3072 && x < 3328) { kind = 0; }
-    surface += surface_offset(kind);
-    if (x < beaches.x + 5 || x > beaches.y - 5) { surface = clamp(surface, 306, 414); }
-    else if (surface < 306) { surface = 306; remaining = 0; } else if (surface > 468) { surface = 468; remaining = 0; }
+    if (x >= cfg.roll_lo && x <= cfg.roll_hi && (kind == 3 || kind == 4)) { kind = next_rng(3); }
+    if (x >= cfg.plateau_lo && x <= cfg.plateau_hi) { kind = 0; }
+    tile += surface_offset(kind);
+    let eps = cfg.surf_min_eps != 0;
+    let under_min = select(tile < cfg.surf_min, select(tile <= cfg.surf_min, tile < cfg.surf_min, above), eps);
+    if (x < beaches.x + 5 || x > beaches.y - 5) {
+      if (under_min) { tile = cfg.surf_min; above = eps; }
+      else if (tile > cfg.surf_beach) { tile = cfg.surf_beach; above = false; }
+    } else if (under_min) { tile = cfg.surf_min; above = eps; remaining = 0; }
+    else if (tile > cfg.surf_max) { tile = cfg.surf_max; above = false; remaining = 0; }
     while (next_rng(3) == 0) { _ = between_rng(-2, 3); }
-    if (x >= cfg.lo && x < cfg.hi) { profiles[index * width + u32(x - cfg.lo)] = surface * 8; }
+    if (x >= cfg.lo && x < cfg.hi) { profiles[index * width + u32(x - cfg.lo)] = tile * 8; }
   }
 }
 var<workgroup> best_scores: array<u32, 64>;

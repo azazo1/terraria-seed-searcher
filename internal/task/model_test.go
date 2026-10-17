@@ -66,13 +66,41 @@ func TestValidateCreateRequiresEnoughColumns(t *testing.T) {
 	}
 }
 
-// 出生点由世界规则确定: 中世界中心 3200 加减 5, 再叠加标注容差.
+// 出生点由世界规则确定: 世界中心加减 5, 再叠加标注容差.
 func TestSpawnWindow(t *testing.T) {
-	lo, hi := SpawnWindow(3400)
-	if lo != 3131 || hi != 3269 {
-		t.Fatalf("unexpected spawn window: %d..%d", lo, hi)
+	cases := []struct {
+		world string
+		lo    int
+		hi    int
+	}{
+		{"small", 2031, 2169},
+		{"medium", 3131, 3269},
+		{"large", 4131, 4269},
 	}
-	if lo, hi := SpawnWindow(3200); hi != 3199 || lo != 3131 {
+	for _, item := range cases {
+		lo, hi := SpawnWindow(item.world, LookupWorld(item.world).Width)
+		if lo != item.lo || hi != item.hi {
+			t.Fatalf("%s spawn window: %d..%d, want %d..%d", item.world, lo, hi, item.lo, item.hi)
+		}
+	}
+	if lo, hi := SpawnWindow("medium", 3200); hi != 3199 || lo != 3131 {
 		t.Fatalf("spawn window must stay inside cols: %d..%d", lo, hi)
+	}
+	if LookupWorld("").Name != "medium" || LookupWorld("weird").Name != "medium" {
+		t.Fatalf("empty or unknown world must fall back to medium")
+	}
+}
+
+// 三个世界尺寸的分段边界必须与 src/world-geometry.h 和 web/gpu/terrain-reference.js 一致.
+func TestWorldGeometries(t *testing.T) {
+	want := map[string]WorldGeometry{
+		"small":  {Name: "small", Width: 4200, Height: 1200, RollLo: 1891, RollHi: 2309, PlateauLo: 2017, PlateauHi: 2183, SurfMin: 204, SurfMinEps: true, SurfBeach: 276, SurfMax: 312},
+		"medium": {Name: "medium", Width: 6400, Height: 1800, RollLo: 2881, RollHi: 3520, PlateauLo: 3073, PlateauHi: 3327, SurfMin: 306, SurfMinEps: false, SurfBeach: 414, SurfMax: 468},
+		"large":  {Name: "large", Width: 8400, Height: 2400, RollLo: 3781, RollHi: 4619, PlateauLo: 4033, PlateauHi: 4367, SurfMin: 408, SurfMinEps: true, SurfBeach: 552, SurfMax: 624},
+	}
+	for name, geometry := range want {
+		if got := LookupWorld(name); got != geometry {
+			t.Fatalf("%s geometry mismatch: %+v", name, got)
+		}
 	}
 }

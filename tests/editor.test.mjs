@@ -7,7 +7,7 @@ import { canvasPoint, findFrame, frameGrid, frameSize, gridGap, imagePoint } fro
 import { applyMeasurement, guideFor, measureGrid, nearestGridLine, selectedGridPair } from '../web/grid-model.js';
 import { migrateParam, PARAM_VERSION } from '../web/frame-schema.js';
 import { DEFAULT_SEARCH_PARAMETERS, normalizeSearchParameters } from '../web/search-parameters.js';
-import { prepareSearch, scoreProfile, terrainProfile } from '../web/gpu/terrain-reference.js';
+import { WORLDS, prepareSearch, scoreProfile, terrainProfile } from '../web/gpu/terrain-reference.js';
 import { SearchSession } from '../web/gpu/search-session.js';
 import { BrowserSearch } from '../web/gpu/search-engine.js';
 
@@ -252,4 +252,15 @@ test('画布每帧仅重绘一次, hover 只更新覆盖层, 缩放保持鼠标�
     const anchor = { x: 400, y: 150 }, point = v.world(anchor); v.scaleAt(2, anchor); assert.deepEqual(v.world(anchor), point);
     assert.equal(elements[0].width, 1600); assert.equal(elements[0].height, 1000);
   } finally { for (const [key, value] of previous) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; } }
+});
+
+test('世界表与 Go 和 C++ 侧保持一致', () => {
+  const expected = {
+    small: { width: 4200, height: 1200, rollLo: 1891, rollHi: 2309, plateauLo: 2017, plateauHi: 2183, surfMin: 204, surfBeach: 276, surfMax: 312 },
+    medium: { width: 6400, height: 1800, rollLo: 2881, rollHi: 3520, plateauLo: 3073, plateauHi: 3327, surfMin: 306, surfBeach: 414, surfMax: 468 },
+    large: { width: 8400, height: 2400, rollLo: 3781, rollHi: 4619, plateauLo: 4033, plateauHi: 4367, surfMin: 408, surfBeach: 552, surfMax: 624 }
+  };
+  for (const [name, geometry] of Object.entries(expected)) {
+    for (const [key, value] of Object.entries(geometry)) assert.equal(WORLDS[name][key], value, `${name}.${key}`);
+  }
 });

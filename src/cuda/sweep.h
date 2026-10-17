@@ -4,6 +4,9 @@
 
 #define MAX_OBS 700
 
+// 世界几何与查找函数在共享头里, CUDA/CPU/MLX 用同一份表.
+#include "../world-geometry.h"
+
 // 设备无关的搜索输入. 由主机侧填充, 传给 CUDA 编译单元.
 struct SweepContext {
     int obs_n;
@@ -17,6 +20,7 @@ struct SweepContext {
     int base_lo, nbase;
     double tol, offer;
     int batch, marker;
+    WorldGeom geom;
 };
 
 // 一块设备的候选. 主机侧合并各设备的输出.

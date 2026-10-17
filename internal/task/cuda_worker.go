@@ -61,6 +61,7 @@ func startCudaWorker(binary, taskDir, observedPath string, meta Meta) (*cudaWork
 		"--spawn-hi", strconv.Itoa(settings.SpawnHi),
 		"--cols", strconv.Itoa(settings.Cols),
 		"--scales", settings.Scales,
+		"--world", settings.WorldName(),
 	}
 	cmd := exec.Command(binary, args...)
 	cmd.Dir = dir

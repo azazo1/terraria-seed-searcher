@@ -3,8 +3,8 @@
  * 与 web/gpu/search.wgsl 以及 src/cuda/sweep.cu 共享同一套整数随机数与评分口径,
  * 三者必须保持一致; 改动任何一处都要同步另外两处, 并用 tests/test_search_backends.py 对拍.
  *
- * 世界尺寸按中世界写死 (6400 x 1800, 地表限制 306 / 414 / 468, 地形分段 2880 / 3072 / 3520 / 3328),
- * 与默认构建的 CPU 和 CUDA 搜索器一致. 非中世界构建需要对这份内核单独处理.
+ * 世界尺寸由参数数组传入 (world_w 与分段边界), 与 CPU 和 CUDA 搜索器共用 src/world-geometry.h
+ * 里的一张表, 三个世界尺寸走同一份内核.
  */
 #pragma once
 
@@ -20,7 +20,20 @@ enum {
     P_NBASE = 7,
     P_RADIUS = 8,
     P_BASE_LO = 9,
-    P_SIZE = 12,
+    P_WORLD_W = 10,
+    P_ROLL_LO = 11,
+    P_ROLL_HI = 12,
+    P_PLATEAU_LO = 13,
+    P_PLATEAU_HI = 14,
+    P_SURF_MIN = 15,
+    P_SURF_BEACH = 16,
+    P_SURF_MAX = 17,
+    P_DUNGEON_LO0 = 18,
+    P_DUNGEON_HI0 = 19,
+    P_DUNGEON_LO1 = 20,
+    P_DUNGEON_HI1 = 21,
+    P_SURF_MIN_EPS = 22,
+    P_SIZE = 23,
 };
 
 inline constexpr const char* kMetalHeader = R"MSL(
@@ -117,7 +130,8 @@ inline void consume_styles(threadgroup int *sa, threadgroup uint *inext, int max
 }
 
 /* 海滩左右边界: 只有这两个值进入地形生成, 其余分支只为保持随机数消耗顺序. */
-inline int2 setup_beach(threadgroup int *sa, threadgroup uint *inext, int seed) {
+inline int2 setup_beach(threadgroup int *sa, threadgroup uint *inext, int seed,
+                        int world_w, int dungeon_lo0, int dungeon_hi0, int dungeon_lo1, int dungeon_hi1) {
     rng_seed(sa, inext, seed);
     (void)rng_next(sa, inext, 5);
     (void)rng_next(sa, inext, 2);
@@ -163,17 +177,17 @@ inline int2 setup_beach(threadgroup int *sa, threadgroup uint *inext, int seed) 
     (void)rng_next(sa, inext, 9);
     int side = rng_next(sa, inext, 2);
     (void)rng_between(sa, inext, 15, 30);
-    int dungeon = rng_next(sa, inext, 6400);
-    int low = (side == 1) ? 3840 : 1600;
-    int high = (side == 1) ? 4800 : 2560;
-    while (dungeon < low || dungeon > high) dungeon = rng_next(sa, inext, 6400);
+    int dungeon = rng_next(sa, inext, world_w);
+    int low = (side == 1) ? dungeon_lo1 : dungeon_lo0;
+    int high = (side == 1) ? dungeon_hi1 : dungeon_hi0;
+    while (dungeon < low || dungeon > high) dungeon = rng_next(sa, inext, world_w);
     for (int j = 0; j < 2; j++) {
         (void)rng_between(sa, inext, 50, 90);
         (void)rng_between(sa, inext, 20, 40);
         (void)rng_between(sa, inext, 20, 40);
     }
     int left = rng_between(sa, inext, 300, 340) + ((side == 1) ? 40 : 20);
-    int right = 6400 - rng_between(sa, inext, 300, 340) - ((side == 1) ? 20 : 40);
+    int right = world_w - rng_between(sa, inext, 300, 340) - ((side == 1) ? 20 : 40);
     return int2(left, right);
 }
 
@@ -192,7 +206,9 @@ inline int surface_offset(threadgroup int *sa, threadgroup uint *inext, int kind
 }
 )MSL";
 
-/* 剖面内核: 每线程一个种子, 生成到观测窗口末尾, 只写窗口内的列. */
+/* 剖面内核: 每线程一个种子, 生成到观测窗口末尾, 只写窗口内的列.
+ * 参数下标与 C++ 侧 P_* 枚举一致: 10 世界宽度, 11/12 重抽窗口, 13/14 平台窗口,
+ * 15/16/17 地表限制, 18..21 地牢横向范围, 22 下限是否带极小正偏移. */
 inline constexpr const char* kProfileSource = R"MSL(
     int tid = (int)thread_position_in_grid.x;
     int count = params[1];
@@ -207,13 +223,15 @@ inline constexpr const char* kProfileSource = R"MSL(
     threadgroup uint *inext = &index_all[lane];
 
     int seed = params[0] + tid;
-    int2 beach = setup_beach(sa, inext, seed);
+    int2 beach = setup_beach(sa, inext, seed, params[10], params[18],
+                             params[19], params[20], params[21]);
     rng_seed(sa, inext, seed);
     /* 初始地表高度与 rock 高度, 两者的结果都不影响窗口内的剖面, 只保留消耗次数. */
     (void)rng_between(sa, inext, 90, 110);
     (void)rng_between(sa, inext, 90, 110);
 
-    int surface = 0;
+    /* 地表按 (整数格, 是否带下限的极小正偏移) 记录, 与 JS/C++ 一致. */
+    int tile = params[15], above = params[22];
     int remaining = beach.x + 5;
     int feature = 0;
     int width = w1 - w0;
@@ -225,20 +243,24 @@ inline constexpr const char* kProfileSource = R"MSL(
             if (feature == 0) remaining = remaining * (rng_between(sa, inext, 5, 30) / 5);
         }
         remaining--;
-        if (x > 2880 && x < 3520 && (feature == 3 || feature == 4)) feature = rng_next(sa, inext, 3);
-        if (x > 3072 && x < 3328) feature = 0;
-        surface += surface_offset(sa, inext, feature);
+        if (x >= params[11] && x <= params[12] && (feature == 3 || feature == 4)) feature = rng_next(sa, inext, 3);
+        if (x >= params[13] && x <= params[14]) feature = 0;
+        tile += surface_offset(sa, inext, feature);
+        bool under_min = params[22] ? (above ? tile < params[15] : tile <= params[15]) : (tile < params[15]);
         if (x < beach.x + 5 || x > beach.y - 5) {
-            surface = clamp(surface, 306, 414);
-        } else if (surface < 306) {
-            surface = 306;
+            if (under_min) { tile = params[15]; above = params[22]; }
+            else if (tile > params[16]) { tile = params[16]; above = 0; }
+        } else if (under_min) {
+            tile = params[15];
+            above = params[22];
             remaining = 0;
-        } else if (surface > 468) {
-            surface = 468;
+        } else if (tile > params[17]) {
+            tile = params[17];
+            above = 0;
             remaining = 0;
         }
         while (rng_next(sa, inext, 3) == 0) (void)rng_between(sa, inext, -2, 3);
-        if (x >= w0 && x < w1) dst[x - w0] = surface * 8;
+        if (x >= w0 && x < w1) dst[x - w0] = tile * 8;
     }
 )MSL";
 

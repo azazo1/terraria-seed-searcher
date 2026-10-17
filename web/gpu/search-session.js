@@ -1,6 +1,6 @@
 /* 浏览器搜索会话: 独立候选结果, 阶段日志和可取消 GPU 调度. */
 import { BrowserSearch } from './search-engine.js';
-import { prepareSearch } from './terrain-reference.js';
+import { prepareSearch, worldGeometry } from './terrain-reference.js';
 export class SearchSession {
   constructor(onChange, engineFactory = () => new BrowserSearch()) { this.onChange = onChange; this.engineFactory = engineFactory; this.running = false; this.rows = []; this.messages = []; this.hasRun = false; this.summary = null; this.matched = 0; }
   log(message) { this.messages.push(`[${new Date().toLocaleTimeString('zh-CN', { hour12: false })}] ${message}`); if (this.messages.length > 80) this.messages.shift(); this.onChange(); }
@@ -20,7 +20,8 @@ export class SearchSession {
     this.engine = this.engineFactory();
     let heartbeat = null;
     if (persistence) heartbeat = setInterval(() => persistence.heartbeat().then(result => { if (result.stopping) this.stop(); }).catch(error => { this.engine?.stop(); this.log('任务连接已中断, 已停止提交新工作块: ' + error.message); }), 5000);
-    this.log(`准备 WebGPU, 种子范围 [${parameters.range[0]}, ${parameters.range[1]}), 中世界 6400 x 1800.`);
+    const geometry = worldGeometry(parameters.world);
+    this.log(`准备 WebGPU, 种子范围 [${parameters.range[0]}, ${parameters.range[1]}), 世界 ${geometry.width} x ${geometry.height}.`);
     try {
       await this.engine.initialize(); if (this.engine.cancelled) return;
       this.log(`${this.engine.adapterInfo}. 正在执行设备地形和评分自检...`);

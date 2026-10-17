@@ -33,23 +33,32 @@ static unsigned score_profile(const std::vector<int>& profile, const std::vector
 }
 int main(int argc, char** argv) {
     try {
-        if (argc == 4 && std::string(argv[1]) == "--profile") {
-            int seed = std::stoi(argv[2]), cols = std::stoi(argv[3]); if (seed < 0 || cols < 1 || cols > 6400) throw std::runtime_error("invalid profile arguments");
-            int state[56]; unsigned index = 0; RNG r = {state, &index}; std::vector<int> out(cols); generate_profile(&r, seed, cols, 0, cols, out.data());
+        if ((argc == 4 || argc == 6) && std::string(argv[1]) == "--profile") {
+            int seed = std::stoi(argv[2]), cols = std::stoi(argv[3]);
+            std::string world = "medium";
+            if (argc == 6) { if (std::string(argv[4]) != "--world") throw std::runtime_error("unknown profile argument: " + std::string(argv[4])); world = argv[5]; }
+            WorldGeom geom; if (!world_geom_lookup(world.c_str(), &geom)) throw std::runtime_error("unknown world: " + world);
+            if (seed < 0 || cols < 1 || cols > geom.w) throw std::runtime_error("invalid profile arguments");
+            int state[56]; unsigned index = 0; RNG r = {state, &index}; std::vector<int> out(cols); generate_profile(&r, seed, cols, 0, cols, out.data(), geom);
             for (int v : out) std::cout << v << ' '; std::cout << '\n'; return 0;
         }
         if (argc < 2) throw std::runtime_error("missing observation path");
-        long long from = 0, to = 2147483647; int cols = 3400, marker = 141, low = 3180, high = 3220, threads = (int)std::min(64u, std::max(1u, std::thread::hardware_concurrency())); double tolerance = .5, offer = .55; std::string scale_text = "1.00";
+        bool spawn_given = false;
+        long long from = 0, to = 2147483647; int cols = 3400, marker = 141, low = 3180, high = 3220, threads = (int)std::min(64u, std::max(1u, std::thread::hardware_concurrency())); double tolerance = .5, offer = .55; std::string scale_text = "1.00", world = "medium";
         for (int i = 2; i < argc; i++) {
             std::string flag = argv[i]; if (i + 1 >= argc) throw std::runtime_error("missing argument: " + flag);
             if (flag == "--range") { from = std::stoll(argv[++i]); if (i + 1 >= argc) throw std::runtime_error("missing range end"); to = std::stoll(argv[++i]); }
             else if (flag == "--cols") cols = std::stoi(argv[++i]); else if (flag == "--marker") marker = std::stoi(argv[++i]);
-            else if (flag == "--spawn-lo") low = std::stoi(argv[++i]); else if (flag == "--spawn-hi") high = std::stoi(argv[++i]);
+            else if (flag == "--spawn-lo") { low = std::stoi(argv[++i]); spawn_given = true; } else if (flag == "--spawn-hi") { high = std::stoi(argv[++i]); spawn_given = true; }
             else if (flag == "--tol") tolerance = std::stod(argv[++i]); else if (flag == "--offer") offer = std::stod(argv[++i]);
             else if (flag == "--scales") scale_text = argv[++i]; else if (flag == "--threads") threads = std::stoi(argv[++i]);
+            else if (flag == "--world") world = argv[++i];
             else if (flag == "--batch" || flag == "--device") ++i; else throw std::runtime_error("unknown argument: " + flag);
         }
-        if (from < 0 || to > 2147483647 || from >= to || cols < 1 || cols > 6400 || low < 0 || high < low || high >= cols || marker < 0 || marker > 100000 || threads < 1 || threads > 256 || !std::isfinite(tolerance) || tolerance < .01 || tolerance > 10 || !std::isfinite(offer) || offer < 0 || offer > 1) throw std::runtime_error("invalid search parameters");
+        WorldGeom geom; if (!world_geom_lookup(world.c_str(), &geom)) throw std::runtime_error("unknown world: " + world);
+        if (!spawn_given) { low = std::max(0, geom.w / 2 - 69); high = std::min(geom.w - 1, geom.w / 2 + 69); }
+        if (high >= cols) throw std::runtime_error("cols 太小, 这个世界的出生点需要更大的模拟列数");
+        if (from < 0 || to > 2147483647 || from >= to || cols < 1 || cols > geom.w || low < 0 || high < low || high >= geom.w || high >= cols || marker < 0 || marker > 100000 || threads < 1 || threads > 256 || !std::isfinite(tolerance) || tolerance < .01 || tolerance > 10 || !std::isfinite(offer) || offer < 0 || offer > 1) throw std::runtime_error("invalid search parameters");
         std::ifstream input(argv[1]); if (!input) throw std::runtime_error("cannot read observation"); std::vector<int> obs; double v; int valid = 0;
         while (input >> v) { if (!std::isfinite(v) || (v != -999 && (v < 0 || v > 1000000))) throw std::runtime_error("invalid observation height"); obs.push_back(v == -999 ? -2147483647 - 1 : (int)(v * 8 + .5)); valid += v != -999; }
         if (!input.eof() || obs.empty() || obs.size() > 700 || valid < 20) throw std::runtime_error("need 20 valid columns and at most 700 total columns");
@@ -62,7 +71,8 @@ int main(int argc, char** argv) {
         std::signal(SIGTERM, stop_search); std::signal(SIGINT, stop_search);
         std::atomic<long long> next(from), done(0), matched(0); std::atomic<int> alive(threads); std::mutex mutex; std::vector<Candidate> candidates;
         const auto started = std::chrono::steady_clock::now(); std::vector<std::thread> workers;
-        std::cout << "Host CPU: " << threads << " threads, seeds [" << from << ", " << to << "), columns " << cols << std::endl;
+        std::cout << "Host CPU: " << threads << " threads, seeds [" << from << ", " << to << "), columns " << cols
+                  << ", world " << geom.w << " x " << geom.h << std::endl;
         auto save_candidates = [&]() {
             std::vector<Candidate> rows;
             { std::lock_guard<std::mutex> guard(mutex); rows = candidates; }
@@ -75,7 +85,7 @@ int main(int argc, char** argv) {
         for (int worker = 0; worker < threads; worker++) workers.emplace_back([&]() {
             int state[56]; unsigned index = 0; RNG r = {state, &index}; std::vector<int> profile(hi - lo);
             while (!interrupted) {
-                long long seed = next.fetch_add(1); if (seed >= to) break; generate_profile(&r, (int)seed, cols, lo, hi, profile.data());
+                long long seed = next.fetch_add(1); if (seed >= to) break; generate_profile(&r, (int)seed, cols, lo, hi, profile.data(), geom);
                 unsigned best = 0; int best_q = 0;
                 for (int b = low; b <= high; b++) for (size_t s = 0; s < scales.size(); s++) {
                     unsigned score = score_profile(profile, obs, shifts[s], b - marker, lo, hi, (int)(tolerance * 8 + 1e-6)); int q = (b - low) * (int)scales.size() + (int)s;

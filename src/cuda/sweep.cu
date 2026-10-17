@@ -29,17 +29,6 @@
 #define __host__
 #endif
 
-/* 世界尺寸. 默认中世界; 用 -DWORLD_LARGE / -DWORLD_SMALL 编译出对应尺寸的版本 */
-#if defined(WORLD_LARGE)
-#define W_MEDIUM 8400
-#define H_MEDIUM 2400
-#elif defined(WORLD_SMALL)
-#define W_MEDIUM 4200
-#define H_MEDIUM 1200
-#else
-#define W_MEDIUM 6400
-#define H_MEDIUM 1800
-#endif
 #define INT_MAX_ 2147483647
 
 /* ---------------- UnifiedRandom ---------------- */
@@ -257,14 +246,14 @@ __device__ __host__ static int surface_offset(RNG *r, int feature) {
  * 返回命中率; 命中数写入 *hits, 有效列数写入 *cnt. */
 __device__ __host__ static double stream_score(RNG *rp, int seed, int left, int right, int cols, int base,
                                      const double *obs, const unsigned char *valid, const int *shift,
-                                     int obs_n, double tol, int *hits_out, int *cnt_out) {
+                                     int obs_n, double tol, int *hits_out, int *cnt_out, WorldGeom geom) {
     RNG r = *rp;
     rng_seed(&r, seed);
-    double num2 = (double)H_MEDIUM * 0.3;
+    double num2 = (double)geom.h * 0.3;
     num2 *= (double)rng_next2(&r, 90, 110) * 0.005;
-    double num3 = num2 + (double)H_MEDIUM * 0.2;
+    double num3 = num2 + (double)geom.h * 0.2;
     num3 *= (double)rng_next2(&r, 90, 110) * 0.01;
-    double num8 = (double)H_MEDIUM * 0.23;
+    double num8 = (double)geom.h * 0.23;
     int num9 = left + 5;
     int feature = 0;
     int hist[7] = {0, 0, 0, 0, 0, 0, 0};
@@ -280,22 +269,22 @@ __device__ __host__ static double stream_score(RNG *rp, int seed, int left, int 
             if (feature == 0) num9 *= (int)((double)rng_next2(&r, 5, 30) * 0.2);
         }
         num9--;
-        if ((double)i > (double)W_MEDIUM * 0.45 && (double)i < (double)W_MEDIUM * 0.55 && (feature == 3 || feature == 4))
+        if ((double)i > (double)geom.w * 0.45 && (double)i < (double)geom.w * 0.55 && (feature == 3 || feature == 4))
             feature = rng_next(&r, 3);
-        if ((double)i > (double)W_MEDIUM * 0.48 && (double)i < (double)W_MEDIUM * 0.52) feature = 0;
+        if ((double)i > (double)geom.w * 0.48 && (double)i < (double)geom.w * 0.52) feature = 0;
         num2 += surface_offset(&r, feature);
         double num10 = 0.17, num11 = 0.26;
         if (i < left + 5 || i > right - 5) {
-            if (num2 < (double)H_MEDIUM * num10) num2 = (double)H_MEDIUM * num10;
+            if (num2 < (double)geom.h * num10) num2 = (double)geom.h * num10;
             else if (num2 > num8) num2 = num8;
-        } else if (num2 < (double)H_MEDIUM * num10) {
-            num2 = (double)H_MEDIUM * num10; num9 = 0;
-        } else if (num2 > (double)H_MEDIUM * num11) {
-            num2 = (double)H_MEDIUM * num11; num9 = 0;
+        } else if (num2 < (double)geom.h * num10) {
+            num2 = (double)geom.h * num10; num9 = 0;
+        } else if (num2 > (double)geom.h * num11) {
+            num2 = (double)geom.h * num11; num9 = 0;
         }
         while (rng_next(&r, 3) == 0) num3 += (double)rng_next2(&r, -2, 3);
-        if (num3 < num2 + (double)H_MEDIUM * 0.06) num3 += 1.0;
-        if (num3 > num2 + (double)H_MEDIUM * 0.35) num3 -= 1.0;
+        if (num3 < num2 + (double)geom.h * 0.06) num3 += 1.0;
+        if (num3 > num2 + (double)geom.h * 0.35) num3 -= 1.0;
 
         int tile = (int)num2;
         /* 该列是否落在窗口内 */
@@ -333,15 +322,17 @@ __device__ __host__ static double stream_score(RNG *rp, int seed, int left, int 
  */
 
 /* 主机 CPU 与 CUDA 共用逐列生成逻辑, 保持随机数消费顺序一致. */
-__device__ __host__ static void generate_profile(RNG *rp, int seed, int cols, int w0, int w1, int *dst) {
+__device__ __host__ static void generate_profile(RNG *rp, int seed, int cols, int w0, int w1, int *dst, WorldGeom geom) {
     int right;
-    int left = setup_beach(rp, seed, W_MEDIUM, &right);
+    int left = setup_beach(rp, seed, geom.w, &right);
     rng_seed(rp, seed);
     /* 初始地表高度与 rock 高度都不进入输出, 只保留随机数消耗.
      * 地表改用 1/8 格整数: 首列必被限制到 306, 之后增量都是整数, 因此整数累加精确. */
     (void)rng_next2(rp, 90, 110);
     (void)rng_next2(rp, 90, 110);
-    int surface = 0;
+    /* 地表用 (整数格, 是否带下限的极小正偏移) 记录. 首个海滩分支必把地表钳到下限,
+     * 所以直接从下限起算; 下限不是整数时要保留这一格的区别, 否则钳制与随机数消耗会分叉. */
+    int tile = geom.surf_min, above = geom.surf_min_eps;
     int remaining = left + 5, feature = 0;
     /* 窗口右侧之后的地形不会写入输出, 也不会再被读取, 无需继续推进. */
     int end = w1 < cols ? w1 : cols;
@@ -352,17 +343,21 @@ __device__ __host__ static void generate_profile(RNG *rp, int seed, int cols, in
             if (feature == 0) remaining *= (int)((double)rng_next2(rp, 5, 30) * 0.2);
         }
         remaining--;
-        /* 6400 * 0.55 的双精度舍入略大于 3520, 所以原条件实际包含 x = 3520, 这里保留该边界. */
-        if (x > 2880 && x <= 3520 && (feature == 3 || feature == 4)) feature = rng_next(rp, 3);
-        if (x > 3072 && x < 3328) feature = 0;
-        surface += surface_offset(rp, feature) * 8;
+        /* 分段窗口由世界尺寸决定: [roll_lo, roll_hi] 等价于 WorldGen 的
+         * x > W*0.45 && x < W*0.55, 含 x = 3520 那种双精度舍入边界. */
+        if (x >= geom.roll_lo && x <= geom.roll_hi && (feature == 3 || feature == 4)) feature = rng_next(rp, 3);
+        if (x >= geom.plateau_lo && x <= geom.plateau_hi) feature = 0;
+        tile += surface_offset(rp, feature);
+        const bool under_min = geom.surf_min_eps
+            ? (above ? tile < geom.surf_min : tile <= geom.surf_min)
+            : (tile < geom.surf_min);
         if (x < left + 5 || x > right - 5) {
-            if (surface < 306 * 8) surface = 306 * 8;
-            else if (surface > 414 * 8) surface = 414 * 8;
-        } else if (surface < 306 * 8) { surface = 306 * 8; remaining = 0; }
-        else if (surface > 468 * 8) { surface = 468 * 8; remaining = 0; }
+            if (under_min) { tile = geom.surf_min; above = geom.surf_min_eps; }
+            else if (tile > geom.surf_beach) { tile = geom.surf_beach; above = 0; }
+        } else if (under_min) { tile = geom.surf_min; above = geom.surf_min_eps; remaining = 0; }
+        else if (tile > geom.surf_max) { tile = geom.surf_max; above = 0; remaining = 0; }
         while (rng_zero(rp, 3)) (void)rng_next2(rp, -2, 3);
-        if (x >= w0 && x < w1) dst[x - w0] = surface;
+        if (x >= w0 && x < w1) dst[x - w0] = tile * 8;
     }
 }
 
@@ -380,6 +375,7 @@ struct Args2 {
     double tol, offer;
     int *prof;                /* batch x (w1 - w0) */
     unsigned long long *best; /* 每种子一个打包结果 */
+    WorldGeom geom;
 };
 
 /* 每线程一个种子, 模拟一次, 把窗口内的列写出去 */
@@ -395,7 +391,7 @@ __global__ void profile_kernel(Args2 a) {
     int stride = gridDim.x * blockDim.x;
     for (int idx = blockIdx.x * blockDim.x + threadIdx.x; idx < nthis; idx += stride) {
         int seed = a.seed_from + idx;
-        generate_profile(&rng, seed, a.cols, a.w0, a.w1, a.prof + (long long)idx * W);
+        generate_profile(&rng, seed, a.cols, a.w0, a.w1, a.prof + (long long)idx * W, a.geom);
     }
 }
 
@@ -531,7 +527,7 @@ bool sweep_run_device(const SweepContext &ctx, int device, long long from, long 
         a.base_lo = ctx.base_lo; a.nbase = ctx.nbase;
         a.seed_from = (int)start; a.seed_to = (int)(start + nthis);
         a.tol = ctx.tol; a.offer = ctx.offer;
-        a.prof = d_prof; a.best = d_best;
+        a.prof = d_prof; a.best = d_best; a.geom = ctx.geom;
 
         cudaMemset(d_best, 0, sizeof(unsigned long long) * nthis);
         int blocks_a = prop.multiProcessorCount * 12;
@@ -635,7 +631,7 @@ int sweep_device_count() {
 int sweep_check(int seed, const SweepContext &ctx, int spawn_lo, int spawn_hi, int cols, int marker) {
     int hsa[56]; unsigned hinext = 0; RNG hrng = { hsa, &hinext, 0, 0, 0 };
     rng_seed(&hrng, seed);
-    int right; int left = setup_beach(&hrng, seed, W_MEDIUM, &right);
+    int right; int left = setup_beach(&hrng, seed, ctx.geom.w, &right);
     printf("seed %d leftBeachEnd %d rightBeachStart %d\n", seed, left, right);
     int shift[MAX_OBS];
     for (int j = 0; j < ctx.obs_n; j++) shift[j] = (int)((double)j * ctx.scales[0] + 0.5);
@@ -643,7 +639,7 @@ int sweep_check(int seed, const SweepContext &ctx, int spawn_lo, int spawn_hi, i
     for (int sx = spawn_lo; sx <= spawn_hi; sx++) {
         int hits, cnt;
         rng_seed(&hrng, seed);
-        double sc = stream_score(&hrng, seed, left, right, cols, sx - marker, ctx.obs, ctx.valid, shift, ctx.obs_n, ctx.tol, &hits, &cnt);
+        double sc = stream_score(&hrng, seed, left, right, cols, sx - marker, ctx.obs, ctx.valid, shift, ctx.obs_n, ctx.tol, &hits, &cnt, ctx.geom);
         if (sc > best) { best = sc; best_base = sx; }
     }
     printf("最佳对齐 spawn_x=%d 得分 %.4f\n", best_base, best);

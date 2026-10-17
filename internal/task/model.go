@@ -20,24 +20,59 @@ import (
 
 const (
 	SchemaVersion = 1
-	Algorithm     = "terraria-1.4.5.8-medium-v1"
-	CPUBlock      = 65536
+	// Algorithm 只标识生成算法版本, 名字里的 medium 是历史叫法; 世界尺寸在 Parameters.World 里.
+	Algorithm = "terraria-1.4.5.8-medium-v1"
+	CPUBlock  = 65536
 	// CUDA 工作块按百万种子一级: 块太小时每块的提交与批边界开销会盖过 GPU 时间, 也拖粗断点.
 	CUDABlock = 1000000
 	// MLX 每次启动都要编译 Metal 内核, 工作块需要足够大才能摊薄固定开销.
 	MLXBlock = 4000000
-	// 世界宽度固定为 6400 (中世界). 出生点由 WorldGen 的 SpawnPoint pass 定在
-	// maxTilesX/2 + genRand.Next(-5, 5), 而世界中心 0.48W 到 0.52W 被强制成平台,
-	// 两个扩大范围的条件都不会触发, 所以出生点恒在 3200 加减 5.
-	worldWidth  = 6400
+	// 出生点由 WorldGen 的 SpawnPoint pass 定在 maxTilesX/2 + genRand.Next(-5, 5),
+	// 世界中心 0.48W 到 0.52W 被强制成平台, 两个扩大范围的条件都不会触发,
+	// 所以出生点只在世界中心加减 5 这几格上.
 	spawnJitter = 5
 	// 容差吸收标注列与真实出生点之间的偏差. 实测一次标偏 38 列的观测, 取 64 仍有余量.
 	spawnTolerance = 64
 )
 
+// WorldGeometry 是地形生成用到的世界尺寸与分段边界.
+// 分段窗口由 WorldGen 的双精度比较导出: [roll_lo, roll_hi] 等价于 x > W*0.45 && x < W*0.55,
+// 地表限制取 H*0.17 / H*0.23 / H*0.26 的截断. 这些值在三个世界尺寸上都是精确整数.
+type WorldGeometry struct {
+	Name       string
+	Width      int
+	Height     int
+	RollLo     int  // 特征重抽窗口起点 (含)
+	RollHi     int  // 特征重抽窗口终点 (含)
+	PlateauLo  int  // 强制平台窗口起点 (含)
+	PlateauHi  int  // 强制平台窗口终点 (含)
+	SurfMin    int  // 地表下限
+	SurfMinEps bool // 下限比整数大一点点 (H*0.17 不是精确整数), 钳制比较要含端点
+	SurfBeach  int  // 海滩段上限
+	SurfMax    int  // 内陆段上限
+}
+
+// 三个世界尺寸. 中世界一行必须与既有搜索器逐位一致, 改这里要先对拍三个后端.
+var worldGeometries = map[string]WorldGeometry{
+	"small":  {Name: "small", Width: 4200, Height: 1200, RollLo: 1891, RollHi: 2309, PlateauLo: 2017, PlateauHi: 2183, SurfMin: 204, SurfMinEps: true, SurfBeach: 276, SurfMax: 312},
+	"medium": {Name: "medium", Width: 6400, Height: 1800, RollLo: 2881, RollHi: 3520, PlateauLo: 3073, PlateauHi: 3327, SurfMin: 306, SurfMinEps: false, SurfBeach: 414, SurfMax: 468},
+	"large":  {Name: "large", Width: 8400, Height: 2400, RollLo: 3781, RollHi: 4619, PlateauLo: 4033, PlateauHi: 4367, SurfMin: 408, SurfMinEps: true, SurfBeach: 552, SurfMax: 624},
+}
+
+// WorldNames 是支持的世界尺寸, 顺序供界面展示.
+var WorldNames = []string{"small", "medium", "large"}
+
+// LookupWorld 返回世界几何. 空名字按中世界处理, 兼容旧任务存档.
+func LookupWorld(name string) WorldGeometry {
+	if geometry, ok := worldGeometries[name]; ok {
+		return geometry
+	}
+	return worldGeometries["medium"]
+}
+
 // SpawnWindow 给出工作台自动使用的出生点世界列范围.
-func SpawnWindow(cols int) (int, int) {
-	center := worldWidth / 2
+func SpawnWindow(world string, cols int) (int, int) {
+	center := LookupWorld(world).Width / 2
 	lo := center - spawnJitter - spawnTolerance
 	hi := center + spawnJitter + spawnTolerance
 	if lo < 0 {
@@ -72,12 +107,19 @@ type Parameters struct {
 	Scales  string   `json:"scales"`
 	Batch   int64    `json:"batch"`
 	Device  int      `json:"device"`
+	// World 是世界尺寸. 空值表示中世界, 这样旧任务存档可以原样恢复.
+	World string `json:"world,omitempty"`
+}
+
+// WorldName 返回规范化的世界尺寸名.
+func (p Parameters) WorldName() string {
+	return LookupWorld(p.World).Name
 }
 
 // Defaults 与旧版工作台保持一致. 出生点范围按世界规则推导, 不写死.
 func Defaults() Parameters {
-	lo, hi := SpawnWindow(3400)
-	return Parameters{Tol: .5, Offer: .55, Range: [2]int64{0, 2147483647}, SpawnLo: lo, SpawnHi: hi, Cols: 3400, Scales: "1.00", Batch: 1000000, Device: 0}
+	lo, hi := SpawnWindow("medium", 3400)
+	return Parameters{Tol: .5, Offer: .55, Range: [2]int64{0, 2147483647}, SpawnLo: lo, SpawnHi: hi, Cols: 3400, Scales: "1.00", Batch: 1000000, Device: 0, World: "medium"}
 }
 
 // Meta 是任务元数据.
@@ -159,6 +201,17 @@ func ParseParameters(raw any) (Parameters, error) {
 			result.Scales = text
 			return nil
 		},
+		"world": func(v any) error {
+			name, ok := v.(string)
+			if !ok {
+				return fmt.Errorf("世界尺寸无效.")
+			}
+			if _, ok := worldGeometries[name]; !ok {
+				return fmt.Errorf("世界尺寸必须是 small, medium 或 large.")
+			}
+			result.World = name
+			return nil
+		},
 		"range": func(v any) error {
 			items, ok := v.([]any)
 			if !ok || len(items) != 2 {
@@ -195,10 +248,11 @@ func ParseParameters(raw any) (Parameters, error) {
 	if result.Offer < 0 || result.Offer > 1 {
 		return Parameters{}, fmt.Errorf("搜索参数 offer 无效.")
 	}
-	if result.SpawnLo < 0 || result.SpawnLo > 6399 || result.SpawnHi < 0 || result.SpawnHi > 6399 {
+	geometry := LookupWorld(result.World)
+	if result.SpawnLo < 0 || result.SpawnLo >= geometry.Width || result.SpawnHi < 0 || result.SpawnHi >= geometry.Width {
 		return Parameters{}, fmt.Errorf("搜索参数 spawn_lo 或 spawn_hi 无效.")
 	}
-	if result.Cols < 1 || result.Cols > 6400 {
+	if result.Cols < 1 || result.Cols > geometry.Width {
 		return Parameters{}, fmt.Errorf("搜索参数 cols 无效.")
 	}
 	if result.Batch < 1 || result.Batch > 2147483647 {

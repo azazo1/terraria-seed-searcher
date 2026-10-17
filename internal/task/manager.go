@@ -322,7 +322,12 @@ func (m *Manager) Create(backend string, rawParameters any, obs observation.Obse
 	}
 	// 出生点是世界规则量 (中心加减 5), 只有标注列会偏, 所以窗口由服务端推导,
 	// 用户不需要也不应该去调这个范围.
-	settings.SpawnLo, settings.SpawnHi = SpawnWindow(settings.Cols)
+	settings.SpawnLo, settings.SpawnHi = SpawnWindow(settings.World, settings.Cols)
+	if settings.SpawnLo > settings.SpawnHi {
+		geometry := LookupWorld(settings.World)
+		need := geometry.Width/2 + spawnJitter + spawnTolerance + 1
+		return Launch{}, fmt.Errorf("%s世界的出生点在 %d 列附近, 模拟列数至少需要 %d.", geometry.Name, geometry.Width/2, need)
+	}
 	if err := ValidateCreate(settings, obs); err != nil {
 		return Launch{}, err
 	}
@@ -596,6 +601,7 @@ func (m *Manager) command(meta Meta, start, end int64, observedPath string) *exe
 		"--spawn-hi", strconv.Itoa(settings.SpawnHi),
 		"--cols", strconv.Itoa(settings.Cols),
 		"--scales", settings.Scales,
+		"--world", settings.WorldName(),
 	}
 	return exec.Command(m.binaries[meta.Backend], args...)
 }

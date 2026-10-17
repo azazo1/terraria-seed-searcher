@@ -57,13 +57,14 @@
         </div>
         <div class="panel stack"><h2>粗筛设置</h2>
           <label class="field">计算方式<select id="search-backend"><option value="webgpu">浏览器 GPU (WebGPU)</option><option value="cpu">主机 CPU</option><option value="cuda">主机 NVIDIA GPU (CUDA)</option><option value="mlx">主机 Apple GPU (MLX/Metal)</option></select></label>
-          <p id="gpu-support" class="hint"></p><p class="hint">浏览器 WebGPU 支持 6400 x 1800 中世界和最多 700 个观测列, 每次先校验设备结果再分批搜索. CPU 和 CUDA 在运行工作台服务的主机上计算. 请保持页面打开以继续 WebGPU 计算; 已提交的断点和候选保存在服务端, 刷新后可以继续任务.</p>
+          <p id="gpu-support" class="hint"></p><p class="hint">浏览器 WebGPU 支持小/中/大世界和最多 700 个观测列, 每次先校验设备结果再分批搜索. CPU 和 CUDA 在运行工作台服务的主机上计算. 请保持页面打开以继续 WebGPU 计算; 已提交的断点和候选保存在服务端, 刷新后可以继续任务.</p>
           <div class="fields"><label class="field">容差<input type="number" id="tol" value="0.5" step="any" min="0.01" max="10"></label><label class="field">最低得分<input type="number" id="offer" value="0.55" step="any" min="0" max="1"></label></div>
           <details id="search-advanced"><summary>高级参数</summary><div class="fields">
             <label class="field">种子起始值 (包含)<input type="number" id="seed-from" min="0" max="2147483646" step="1" value="0"></label><label class="field">种子结束值 (不含)<input type="number" id="seed-to" min="1" max="2147483647" step="1" value="2147483647"></label>
             <label class="field">模拟列数<input type="number" id="search-cols" min="1" max="8400" step="1" value="3400"></label><label class="field">搜索尺度 (英文逗号分隔)<input type="text" id="search-scales" value="1.00"></label>
             <label class="field">批大小<input type="number" id="search-batch" min="1" max="2147483647" step="1" value="1000000"></label><label class="field">GPU 编号 (仅 CUDA, -1 为全部)<input type="number" id="search-device" min="-1" max="1024" step="1" value="0"></label>
-          </div><p class="hint">出生点范围由世界规则自动推导 (中世界在 3200 加减 5, 再留 64 列标注容差), 不需要手动调整. 搜索尺度调整粗筛的列间距, 不是图片缩放.</p></details>
+            <label class="field">世界尺寸<select id="search-world"><option value="small">小世界 4200 x 1200</option><option value="medium" selected>中世界 6400 x 1800</option><option value="large">大世界 8400 x 2400</option></select></label>
+          </div><p class="hint">出生点范围由世界规则自动推导 (世界中心加减 5, 再留 64 列标注容差), 不需要手动调整. 世界尺寸要和你截图的世界一致, 否则地形对不上. 搜索尺度调整粗筛的列间距, 不是图片缩放.</p></details>
           <p class="hint">调低最低得分会保留更多候选.</p>
           <p id="start-reason" class="hint warn" role="status" aria-live="polite">正在读取搜索状态...</p>
           <div class="actions"><button id="start" class="primary" disabled aria-describedby="start-reason">开始新搜索</button><button id="stop" disabled>停止搜索</button><button id="go-candidates">查看候选 →</button></div>

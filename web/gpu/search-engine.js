@@ -1,5 +1,5 @@
 /* WebGPU 调度与设备结果对拍, 每批释放执行权以支持停止和页面交互. */
-import { prepareSearch, scoreProfile, terrainProfile } from './terrain-reference.js';
+import { prepareSearch, scoreProfile, terrainProfile, worldGeometry } from './terrain-reference.js';
 const U = { MAP_READ: 1, COPY_SRC: 4, COPY_DST: 8, UNIFORM: 64, STORAGE: 128 };
 export class BrowserSearch {
   constructor() { this.cancelled = false; this.resources = []; }
@@ -33,8 +33,10 @@ export class BrowserSearch {
   releaseBatch() { for (const buffer of this.resources.splice(0)) buffer.destroy(); }
   async dispatch(start, count, observation, parameters, { profilesOnly = false } = {}) {
     if (this.failure) throw this.failure;
-    const p = prepareSearch(observation, parameters), width = p.hi - p.lo, device = this.device;
-    const uniform = new Int32Array([start, count, parameters.cols, p.obs8.length, p.scales.length, p.lo, p.hi, p.base, p.combinations, Math.floor(parameters.tol * 8 + 1e-6), 0, 0]);
+    const p = prepareSearch(observation, parameters), width = p.hi - p.lo, device = this.device, g = p.geometry;
+    const uniform = new Int32Array([start, count, parameters.cols, p.obs8.length, p.scales.length, p.lo, p.hi, p.base, p.combinations,
+      Math.floor(parameters.tol * 8 + 1e-6), g.width, g.rollLo, g.rollHi, g.plateauLo, g.plateauHi, g.surfMin, g.surfBeach, g.surfMax,
+      g.dungeonLo0, g.dungeonHi0, g.dungeonLo1, g.dungeonHi1, g.surfMinEps ? 1 : 0]);
     const buffers = [this.buffer(uniform, U.UNIFORM | U.COPY_DST), this.buffer(p.obs8, U.STORAGE | U.COPY_DST), this.buffer(p.shifts, U.STORAGE | U.COPY_DST), this.buffer(count * width * 4, U.STORAGE | U.COPY_SRC), this.buffer(count * 8, U.STORAGE | U.COPY_SRC)];
     const group = device.createBindGroup({ layout: this.layout, entries: buffers.map((buffer, binding) => ({ binding, resource: { buffer } })) });
     const size = profilesOnly ? count * width * 4 : count * 8, readback = this.buffer(size, U.MAP_READ | U.COPY_DST);
@@ -50,15 +52,19 @@ export class BrowserSearch {
   }
   async selfTest() {
     // 覆盖低种子, 初始化常量两侧和 int32 上边界. 全宽剖面对拍会覆盖两端海滩和出生区.
-    const parameters = { cols: 6400, spawn_lo: 0, spawn_hi: 6399, scales: '1.00', tol: .5 };
     const observation = { heights: Array(20).fill(0), marker: 0 };
     let columns = 0;
-    for (const start of [0, 161803397, 2147483643]) {
-      if (this.cancelled) return null;
-      const actual = await this.dispatch(start, 4, observation, parameters, { profilesOnly: true });
-      for (let index = 0; index < 4; index++) {
-        const expected = terrainProfile(start + index, 6400);
-        for (let x = 0; x < 6400; x++) { if (actual[index * 6400 + x] !== expected[x]) throw new Error(`GPU 地形对拍失败: seed=${start + index}, x=${x}, GPU=${actual[index * 6400 + x]}, CPU=${expected[x]}. 已停止搜索.`); columns++; }
+    /* 三个世界尺寸都要对拍: 分段窗口和地表下限随尺寸变, 中世界过了不代表小世界过大世界也过. */
+    for (const world of ['small', 'medium', 'large']) {
+      const geometry = worldGeometry(world);
+      const parameters = { cols: geometry.width, spawn_lo: 0, spawn_hi: geometry.width - 1, scales: '1.00', tol: .5, world };
+      for (const start of [0, 161803397, 2147483643]) {
+        if (this.cancelled) return null;
+        const actual = await this.dispatch(start, 4, observation, parameters, { profilesOnly: true });
+        for (let index = 0; index < 4; index++) {
+          const expected = terrainProfile(start + index, geometry.width, world);
+          for (let x = 0; x < geometry.width; x++) { if (actual[index * geometry.width + x] !== expected[x]) throw new Error(`GPU 地形对拍失败: ${world} seed=${start + index}, x=${x}, GPU=${actual[index * geometry.width + x]}, CPU=${expected[x]}. 已停止搜索.`); columns++; }
+        }
       }
     }
     const profile = terrainProfile(42, 3400), heights = Array.from(profile.slice(3100, 3196), (y, index) => index % 7 === 0 ? -999 : (y - profile[3100]) / 8 + 30);

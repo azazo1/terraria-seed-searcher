@@ -6,9 +6,10 @@
  *
  * 用法: sweep-mlx <观测文件> [--range lo hi] [--tol 0.5] [--offer 0.55] [--batch 200000]
  *                       [--marker 471] [--spawn-lo 3160] [--spawn-hi 3240] [--cols 3550]
- *                       [--scales 1.00] [--profile <seed> <cols>]
+ *                       [--scales 1.00] [--world small|medium|large] [--profile <seed> <cols>]
  */
 #include "../search/candidate-file.h"
+#include "../world-geometry.h"
 #include "terrain-metal.h"
 #include <mlx/c/fast.h>
 #include <mlx/c/mlx.h>
@@ -79,6 +80,8 @@ struct Settings {
     double offer = .55;
     int batch = 200000;
     std::string scales = "1.00";
+    std::string world = "medium";
+    bool spawn_given = false;
     int profile_seed = -1;
     int profile_cols = 0;
 };
@@ -89,6 +92,23 @@ std::string argument(int argc, char** argv, int& index, const std::string& flag)
 }
 
 int run_profile(Kernel& kernel, mlx_stream stream, const Settings& settings);
+
+/* 把世界几何写进内核参数数组, 分段边界与 CPU/CUDA 共用一张表. */
+void fill_world_params(int32_t *params, const WorldGeom& geom) {
+    params[P_WORLD_W] = geom.w;
+    params[P_ROLL_LO] = geom.roll_lo;
+    params[P_ROLL_HI] = geom.roll_hi;
+    params[P_PLATEAU_LO] = geom.plateau_lo;
+    params[P_PLATEAU_HI] = geom.plateau_hi;
+    params[P_SURF_MIN] = geom.surf_min;
+    params[P_SURF_MIN_EPS] = geom.surf_min_eps;
+    params[P_SURF_BEACH] = geom.surf_beach;
+    params[P_SURF_MAX] = geom.surf_max;
+    params[P_DUNGEON_LO0] = (int32_t)((double)geom.w * 0.25);
+    params[P_DUNGEON_HI0] = (int32_t)((double)geom.w * 0.40);
+    params[P_DUNGEON_LO1] = (int32_t)((double)geom.w * 0.60);
+    params[P_DUNGEON_HI1] = (int32_t)((double)geom.w * 0.75);
+}
 
 /* 内核调用的公共包装: 准备输出形状, 网格和线程组. */
 Array launch(Kernel& kernel, mlx_stream stream, const mlx_array* inputs, size_t input_count, int out_elements,
@@ -135,12 +155,16 @@ int main(int argc, char** argv) {
                 settings.marker = std::stoi(argument(argc, argv, i, flag));
             } else if (flag == "--spawn-lo") {
                 settings.spawn_lo = std::stoi(argument(argc, argv, i, flag));
+                settings.spawn_given = true;
             } else if (flag == "--spawn-hi") {
                 settings.spawn_hi = std::stoi(argument(argc, argv, i, flag));
+                settings.spawn_given = true;
             } else if (flag == "--batch") {
                 settings.batch = std::stoi(argument(argc, argv, i, flag));
             } else if (flag == "--scales") {
                 settings.scales = argument(argc, argv, i, flag);
+            } else if (flag == "--world") {
+                settings.world = argument(argc, argv, i, flag);
             } else if (flag == "--profile") {
                 settings.profile_seed = std::stoi(argument(argc, argv, i, flag));
                 settings.profile_cols = std::stoi(argument(argc, argv, i, flag));
@@ -150,11 +174,20 @@ int main(int argc, char** argv) {
                 throw std::runtime_error("未知参数: " + flag);
             }
         }
-        if (settings.cols < 1 || settings.cols > 6400) throw std::runtime_error("列数超出范围");
+        WorldGeom geom;
+        if (!world_geom_lookup(settings.world.c_str(), &geom)) throw std::runtime_error("未知世界尺寸: " + settings.world);
+        if (settings.cols < 1 || settings.cols > geom.w) throw std::runtime_error("列数超出范围");
+        if (!settings.spawn_given) {
+            settings.spawn_lo = std::max(0, geom.w / 2 - 69);
+            settings.spawn_hi = std::min(geom.w - 1, geom.w / 2 + 69);
+        }
+        if (settings.profile_seed >= 0 && (settings.profile_cols < 1 || settings.profile_cols > geom.w))
+            throw std::runtime_error("剖面列数超出范围");
         if (settings.batch < 1) throw std::runtime_error("批大小无效");
         if (settings.from < 0 || settings.to > 2147483647 || settings.from >= settings.to)
             throw std::runtime_error("种子区间无效");
-        if (settings.spawn_lo < 0 || settings.spawn_hi < settings.spawn_lo || settings.spawn_hi >= settings.cols)
+        if (settings.spawn_lo < 0 || settings.spawn_hi < settings.spawn_lo || settings.spawn_hi >= geom.w ||
+            settings.spawn_hi >= settings.cols)
             throw std::runtime_error("出生点范围无效");
         if (settings.marker < 0 || settings.marker > 100000) throw std::runtime_error("观测列号无效");
         if (!std::isfinite(settings.tol) || settings.tol < .01 || settings.tol > 10) throw std::runtime_error("容差无效");
@@ -265,6 +298,7 @@ int main(int argc, char** argv) {
             params[P_NBASE] = nbase;
             params[P_RADIUS] = radius;
             params[P_BASE_LO] = base_lo;
+            fill_world_params(params, geom);
             int param_shape[1] = {P_SIZE};
             Array params_array(mlx_array_new_data(params, param_shape, 1, MLX_INT32));
 
@@ -330,6 +364,9 @@ int run_profile(Kernel& kernel, mlx_stream stream, const Settings& settings) {
     params[P_COLS] = settings.profile_cols;
     params[P_W0] = 0;
     params[P_W1] = settings.profile_cols;
+    WorldGeom geom;
+    world_geom_lookup(settings.world.c_str(), &geom);
+    fill_world_params(params, geom);
     int param_shape[1] = {P_SIZE};
     Array params_array(mlx_array_new_data(params, param_shape, 1, MLX_INT32));
     mlx_array input_list[1] = {params_array.handle};

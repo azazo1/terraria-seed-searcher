@@ -22,6 +22,8 @@ struct Options {
     double scales[8];
     int nscale;
     bool worker;
+    const char *world;
+    bool spawn_given;
 };
 
 static int load_obs(const char *path, double *obs, unsigned char *valid, int *n) {
@@ -124,14 +126,14 @@ int main(int argc, char **argv) {
     opt.tol = 0.5; opt.offer = 0.20; opt.cols = 3550; opt.spawn_lo = 3160; opt.spawn_hi = 3240;
     opt.marker = 471; opt.check = -1; opt.from = 0; opt.to = 2147483647LL; opt.batch = 1000000; opt.device = 0;
     opt.scales[0] = 1.00; opt.scales[1] = 0.97; opt.scales[2] = 1.03; opt.nscale = 3;
-    opt.worker = false;
+    opt.worker = false; opt.world = "medium"; opt.spawn_given = false;
     for (int i = 2; i < argc; i++) {
         if (!strcmp(argv[i], "--worker")) opt.worker = true;
         else if (!strcmp(argv[i], "--tol") && i + 1 < argc) opt.tol = atof(argv[++i]);
         else if (!strcmp(argv[i], "--offer") && i + 1 < argc) opt.offer = atof(argv[++i]);
         else if (!strcmp(argv[i], "--cols") && i + 1 < argc) opt.cols = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--spawn-lo") && i + 1 < argc) opt.spawn_lo = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--spawn-hi") && i + 1 < argc) opt.spawn_hi = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--spawn-lo") && i + 1 < argc) { opt.spawn_lo = atoi(argv[++i]); opt.spawn_given = true; }
+        else if (!strcmp(argv[i], "--spawn-hi") && i + 1 < argc) { opt.spawn_hi = atoi(argv[++i]); opt.spawn_given = true; }
         else if (!strcmp(argv[i], "--marker") && i + 1 < argc) opt.marker = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--range") && i + 2 < argc) { opt.from = atoll(argv[++i]); opt.to = atoll(argv[++i]); }
         else if (!strcmp(argv[i], "--batch") && i + 1 < argc) opt.batch = atoi(argv[++i]);
@@ -140,6 +142,7 @@ int main(int argc, char **argv) {
             opt.device = (!strcmp(value, "all")) ? -1 : atoi(value);
         }
         else if (!strcmp(argv[i], "--check") && i + 1 < argc) opt.check = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--world") && i + 1 < argc) opt.world = argv[++i];
         else if (!strcmp(argv[i], "--scale") && i + 1 < argc) { opt.scales[0] = atof(argv[++i]); opt.nscale = 1; }
         else if (!strcmp(argv[i], "--scales") && i + 1 < argc) {
             opt.nscale = 0;
@@ -149,6 +152,26 @@ int main(int argc, char **argv) {
     }
     if (opt.batch < 1) opt.batch = 1;
     if (opt.device < 0) opt.device = -1;
+    WorldGeom geom;
+    if (!world_geom_lookup(opt.world, &geom)) {
+        fprintf(stderr, "未知世界尺寸: %s (可选 small / medium / large)\n", opt.world);
+        return 1;
+    }
+    /* 没给出生点范围时按世界规则推导: 中心加减 5, 再留 64 列标注容差. */
+    if (!opt.spawn_given) {
+        opt.spawn_lo = geom.w / 2 - 5 - 64;
+        opt.spawn_hi = geom.w / 2 + 5 + 64;
+        if (opt.spawn_lo < 0) opt.spawn_lo = 0;
+        if (opt.spawn_hi > geom.w - 1) opt.spawn_hi = geom.w - 1;
+    }
+    if (opt.cols < 1 || opt.cols > geom.w) {
+        fprintf(stderr, "模拟列数必须在 1 到 %d 之间\n", geom.w);
+        return 1;
+    }
+    if (opt.spawn_lo < 0 || opt.spawn_hi >= geom.w || opt.spawn_lo > opt.spawn_hi) {
+        fprintf(stderr, "出生点范围超出 %d 列的世界\n", geom.w);
+        return 1;
+    }
 
     int shift3[8 * MAX_OBS];
     for (int s = 0; s < opt.nscale; s++)
@@ -167,7 +190,8 @@ int main(int argc, char **argv) {
     if (w0 < 0) w0 = 0;
     if (w1 > opt.cols) w1 = opt.cols;
     int W = w1 - w0;
-    printf("剖面窗口 [%d, %d) 共 %d 列; 偏移 %d 个, 尺度 %d 个\n", w0, w1, W, nbase, opt.nscale);
+    printf("剖面窗口 [%d, %d) 共 %d 列; 偏移 %d 个, 尺度 %d 个; 世界 %d x %d\n",
+           w0, w1, W, nbase, opt.nscale, geom.w, geom.h);
 
     SweepContext ctx;
     ctx.obs_n = obs_n;
@@ -182,6 +206,7 @@ int main(int argc, char **argv) {
     ctx.cols = opt.cols; ctx.w0 = w0; ctx.w1 = w1; ctx.W = W;
     ctx.base_lo = base_lo; ctx.nbase = nbase;
     ctx.tol = opt.tol; ctx.offer = opt.offer; ctx.batch = opt.batch; ctx.marker = opt.marker;
+    ctx.geom = geom;
 
     if (opt.check >= 0) {
         return sweep_check(opt.check, ctx, opt.spawn_lo, opt.spawn_hi, opt.cols, opt.marker);
