@@ -33,3 +33,14 @@ func TestParseCUDAIgnoresOutOfRange(t *testing.T) {
 		t.Fatalf("out of range batch must be ignored: %+v", result)
 	}
 }
+
+// 常驻模式下同一个日志里有多块的进度行和确认行, 当前块只能认自己那块.
+func TestParseCUDAWorkerLog(t *testing.T) {
+	text := "  批 0..1000000 完成, 本批达标 2 条, 累计候选 9, 进度 0.047%, GPU 0.113 s\n" +
+		"块 0..1000000 完成\n" +
+		"  批 1000000..1002000 完成, 本批达标 0 条, 累计候选 9, 进度 0.047%, GPU 0.002 s\n"
+	result := Parse(text, "cuda", [2]int64{1000000, 1002000})
+	if result.Scanned != 2000 || result.Next != 1002000 || result.Candidates != 9 {
+		t.Fatalf("unexpected progress: %+v", result)
+	}
+}

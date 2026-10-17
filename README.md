@@ -102,12 +102,12 @@ just build
 
 # 单卡
 ./sweep data/observed_manual.txt --range 0 1073741824 \
-    --tol 0.5 --offer 0.55 --batch 400000 --device 0 \
+    --tol 0.5 --offer 0.55 --batch 1000000 --device 0 \
     --marker 141 --spawn-lo 3180 --spawn-hi 3220 --cols 3400
 
 # 多卡, 自动平分种子区间
 ./sweep data/observed_manual.txt --range 0 2147483647 \
-    --tol 0.5 --offer 0.55 --batch 400000 --device all \
+    --tol 0.5 --offer 0.55 --batch 1000000 --device all \
     --marker 141 --spawn-lo 3180 --spawn-hi 3220 --cols 3400
 ```
 
@@ -123,4 +123,5 @@ just build
 | `--tol` | 命中判据的容差, 单位格 |
 | `--offer` | 只保留分数高于此值的种子 |
 | `--device` | `0` 起始的 GPU 编号; `all` 或 `-1` 使用全部显卡 |
+| `--batch` | 一次提交多少种子; 显存装不下时会自动缩小, 并在启动时打印实际值 |
 | `--scales` | 逗号分隔的比例尺集合 |

@@ -22,7 +22,8 @@ const (
 	SchemaVersion = 1
 	Algorithm     = "terraria-1.4.5.8-medium-v1"
 	CPUBlock      = 65536
-	CUDABlock     = 400000
+	// CUDA 工作块按百万种子一级: 块太小时每块的提交与批边界开销会盖过 GPU 时间, 也拖粗断点.
+	CUDABlock = 1000000
 	// MLX 每次启动都要编译 Metal 内核, 工作块需要足够大才能摊薄固定开销.
 	MLXBlock = 4000000
 )
@@ -54,7 +55,7 @@ type Parameters struct {
 
 // Defaults 与旧版工作台保持一致.
 func Defaults() Parameters {
-	return Parameters{Tol: .5, Offer: .55, Range: [2]int64{0, 2147483647}, SpawnLo: 3180, SpawnHi: 3220, Cols: 3400, Scales: "1.00", Batch: 400000, Device: 0}
+	return Parameters{Tol: .5, Offer: .55, Range: [2]int64{0, 2147483647}, SpawnLo: 3180, SpawnHi: 3220, Cols: 3400, Scales: "1.00", Batch: 1000000, Device: 0}
 }
 
 // Meta 是任务元数据.

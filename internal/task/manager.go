@@ -429,6 +429,13 @@ func (m *Manager) runNative(id string, runtime *runtimeState) {
 		m.mu.Unlock()
 		_ = runtime.lock.Close()
 	}()
+	// CUDA 搜索器一个任务只起一次进程, 每块重起一次的开销在快卡上会盖过 GPU 时间.
+	var worker *cudaWorker
+	defer func() {
+		if worker != nil {
+			worker.Close()
+		}
+	}()
 	for {
 		meta, err := store.Read()
 		if err != nil {
@@ -468,33 +475,59 @@ func (m *Manager) runNative(id string, runtime *runtimeState) {
 		if start+count < end {
 			end = start + count
 		}
-		attempt := filepath.Join(store.Directory, "block-"+randomHex(16))
-		if err := os.Mkdir(attempt, 0o755); err != nil {
-			m.failTask(store, runtime, err)
-			return
-		}
-		logPath := filepath.Join(attempt, "output.txt")
-		logFile, err := os.Create(logPath)
-		if err != nil {
-			m.failTask(store, runtime, err)
-			return
-		}
-		command := m.command(meta, start, end, filepath.Join(store.Directory, "observed.txt"))
-		command.Stdout = logFile
-		command.Stderr = logFile
-		command.Dir = attempt
-		m.mu.Lock()
-		runtime.block = &blockState{from: start, to: end, log: logPath, directory: attempt}
-		m.mu.Unlock()
-		err = command.Run()
-		_ = logFile.Close()
-		if err != nil {
-			m.failTask(store, runtime, fmt.Errorf("搜索进程退出码 %d. 请查看运行输出, 可以从最近断点重试.", exitCode(err)))
-			return
-		}
+		attempt := ""
+		logPath := ""
 		name := CandidateFiles[meta.Backend]
-		rows := candidate.ReadFile(filepath.Join(attempt, name), 500000)
-		if _, err := os.Stat(filepath.Join(attempt, name)); err != nil {
+		observed := filepath.Join(store.Directory, "observed.txt")
+		if meta.Backend == "cuda" {
+			if worker == nil {
+				worker, err = startCudaWorker(m.binaries["cuda"], store.Directory, observed, meta)
+				if err != nil {
+					m.failTask(store, runtime, fmt.Errorf("无法启动 CUDA 搜索器: %w", err))
+					return
+				}
+			}
+			logPath = worker.LogPath()
+			m.mu.Lock()
+			runtime.block = &blockState{from: start, to: end, log: logPath}
+			m.mu.Unlock()
+			err = worker.Run(start, end)
+			if err != nil {
+				m.failTask(store, runtime, err)
+				return
+			}
+		} else {
+			attempt = filepath.Join(store.Directory, "block-"+randomHex(16))
+			if err := os.Mkdir(attempt, 0o755); err != nil {
+				m.failTask(store, runtime, err)
+				return
+			}
+			logPath = filepath.Join(attempt, "output.txt")
+			logFile, err := os.Create(logPath)
+			if err != nil {
+				m.failTask(store, runtime, err)
+				return
+			}
+			command := m.command(meta, start, end, observed)
+			command.Stdout = logFile
+			command.Stderr = logFile
+			command.Dir = attempt
+			m.mu.Lock()
+			runtime.block = &blockState{from: start, to: end, log: logPath, directory: attempt}
+			m.mu.Unlock()
+			err = command.Run()
+			_ = logFile.Close()
+			if err != nil {
+				m.failTask(store, runtime, fmt.Errorf("搜索进程退出码 %d. 请查看运行输出, 可以从最近断点重试.", exitCode(err)))
+				return
+			}
+		}
+		candidatesPath := filepath.Join(attempt, name)
+		if meta.Backend == "cuda" {
+			candidatesPath = filepath.Join(worker.Dir(), name)
+		}
+		rows := candidate.ReadFile(candidatesPath, 500000)
+		if _, err := os.Stat(candidatesPath); err != nil {
 			m.failTask(store, runtime, fmt.Errorf("搜索器未生成候选文件, 当前工作块未提交."))
 			return
 		}
@@ -516,7 +549,11 @@ func (m *Manager) runNative(id string, runtime *runtimeState) {
 			status = "paused"
 		}
 		elapsed := runtime.baseElapsed + time.Since(runtime.started).Seconds()
-		_, commitErr := store.Commit(start, end, rows, elapsed, report.Candidates, status, filepath.Base(attempt))
+		lastBlock := ""
+		if attempt != "" {
+			lastBlock = filepath.Base(attempt)
+		}
+		_, commitErr := store.Commit(start, end, rows, elapsed, report.Candidates, status, lastBlock)
 		runtime.block = nil
 		if meta.Backend == "cpu" {
 			seconds := time.Since(blockStarted).Seconds()
@@ -563,7 +600,7 @@ func (m *Manager) command(meta Meta, start, end int64, observedPath string) *exe
 func (m *Manager) failTask(store Store, runtime *runtimeState, err error) {
 	m.mu.Lock()
 	lastBlock := ""
-	if runtime.block != nil {
+	if runtime.block != nil && runtime.block.directory != "" {
 		lastBlock = filepath.Base(runtime.block.directory)
 	}
 	m.mu.Unlock()

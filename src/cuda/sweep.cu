@@ -9,8 +9,11 @@
  *
  * 用法: sweep.exe <观测文件> [--scale 1.0] [--cols 3550] [--tol 1.5] [--offer 0.55]
  *                  [--spawn-lo 3160] [--spawn-hi 3240] [--device all] [--check <seed>]
+ *                  [--worker]
  *   候选写在工作目录的 candidates_gpu2.txt; 多卡时每块卡写 candidates_gpu2.devN.txt,
  *   主线程再合并到 candidates_gpu2.txt.
+ *   --worker 是常驻模式: 从 stdin 逐行读 "起点 终点", 每块跑完打印一行确认, 进程不退出,
+ *   供工作台一个任务只初始化一次 CUDA 上下文.
  */
 #include "sweep.h"
 #include <cstdio>
@@ -479,12 +482,24 @@ bool sweep_run_device(const SweepContext &ctx, int device, long long from, long 
     cudaMemcpy(d_valid, ctx.valid, ctx.obs_n, cudaMemcpyHostToDevice);
     cudaMemcpy(d_shift3, ctx.shift3, sizeof(int) * 8 * ctx.obs_n, cudaMemcpyHostToDevice);
 
+    /* 剖面缓冲按 批大小 x 窗口宽度 一次性分配. 显存不够时按可用显存收回批大小,
+     * 剩下的种子由外层循环分几批跑完, 对外仍然是一个完整工作块. */
+    size_t free_bytes = 0, total_bytes = 0;
+    if (cudaMemGetInfo(&free_bytes, &total_bytes) != cudaSuccess) free_bytes = 0;
+    long long batch = ctx.batch;
+    const long long per_seed = (long long)ctx.W * (long long)sizeof(int);
+    if (free_bytes > 0 && per_seed > 0) {
+        long long fit = (long long)((double)free_bytes * 0.6) / per_seed;
+        if (fit < 1) fit = 1;
+        if (fit < batch) batch = fit;
+    }
+
     int *d_prof = nullptr; unsigned long long *d_best = nullptr;
-    cudaMalloc(&d_prof, sizeof(int) * (size_t)ctx.batch * ctx.W);
-    cudaMalloc(&d_best, sizeof(unsigned long long) * ctx.batch);
+    cudaMalloc(&d_prof, sizeof(int) * (size_t)batch * ctx.W);
+    cudaMalloc(&d_best, sizeof(unsigned long long) * batch);
 
     const int MAX_OUT = 500000;
-    std::vector<unsigned long long> h_best(ctx.batch);
+    std::vector<unsigned long long> h_best((size_t)batch);
     int threads = 128;
     size_t shmem_a = (size_t)threads * (56 * sizeof(int) + sizeof(unsigned));
     size_t shmem_b = (size_t)ctx.W * sizeof(int);
@@ -493,6 +508,10 @@ bool sweep_run_device(const SweepContext &ctx, int device, long long from, long 
     }
     if (prefixed) printf("[GPU %d] ", device);
     printf("kernel A 共享内存 %zu B, kernel B 共享内存 %zu B\n", shmem_a, shmem_b);
+    if (batch != ctx.batch) {
+        if (prefixed) printf("[GPU %d] ", device);
+        printf("可用显存 %.1f GB, 批大小从 %d 收到 %lld\n", free_bytes / 1073741824.0, ctx.batch, batch);
+    }
     fflush(stdout);
 
     if (!sweep_save_output(ctx, out, candidates_path, out.live_order)) {
@@ -500,9 +519,12 @@ bool sweep_run_device(const SweepContext &ctx, int device, long long from, long 
         return false;
     }
 
+    cudaEvent_t t0 = nullptr, t1 = nullptr;
+    cudaEventCreate(&t0);
+    cudaEventCreate(&t1);
     long long total = to - from;
-    for (long long start = from; start < to; start += ctx.batch) {
-        int nthis = (int)((to - start < ctx.batch) ? (to - start) : ctx.batch);
+    for (long long start = from; start < to; start += batch) {
+        int nthis = (int)((to - start < batch) ? (to - start) : batch);
         Args2 a;
         a.obs8 = d_obs; a.valid = d_valid; a.shift3 = d_shift3; a.obs_n = ctx.obs_n;
         a.scale_n = ctx.nscale; a.cols = ctx.cols; a.w0 = ctx.w0; a.w1 = ctx.w1;
@@ -513,6 +535,7 @@ bool sweep_run_device(const SweepContext &ctx, int device, long long from, long 
 
         cudaMemset(d_best, 0, sizeof(unsigned long long) * nthis);
         int blocks_a = prop.multiProcessorCount * 12;
+        cudaEventRecord(t0);
         profile_kernel<<<blocks_a, threads, shmem_a>>>(a);
         cudaError_t err = cudaGetLastError();
         if (err != cudaSuccess) {
@@ -533,6 +556,10 @@ bool sweep_run_device(const SweepContext &ctx, int device, long long from, long 
             printf("内核错误: %s\n", cudaGetErrorString(err));
             return false;
         }
+        cudaEventRecord(t1);
+        cudaEventSynchronize(t1);
+        float gpu_ms = 0.0f;
+        cudaEventElapsedTime(&gpu_ms, t0, t1);
 
         cudaMemcpy(h_best.data(), d_best, sizeof(unsigned long long) * nthis, cudaMemcpyDeviceToHost);
         std::vector<int> ord;
@@ -570,9 +597,9 @@ bool sweep_run_device(const SweepContext &ctx, int device, long long from, long 
             return false;
         }
         if (prefixed) printf("[GPU %d] ", device);
-        printf("  批 %lld..%lld 完成, 本批达标 %zu 条, 累计候选 %zu, 进度 %.3f%%\n",
+        printf("  批 %lld..%lld 完成, 本批达标 %zu 条, 累计候选 %zu, 进度 %.3f%%, GPU %.3f s\n",
                start, start + nthis, ord.size(), out.seed.size(),
-               100.0 * (start + nthis - from) / (double)total);
+               100.0 * (start + nthis - from) / (double)total, gpu_ms / 1000.0);
         fflush(stdout);
     }
 
@@ -591,6 +618,7 @@ bool sweep_run_device(const SweepContext &ctx, int device, long long from, long 
         fprintf(stderr, "cannot save %s\n", candidates_path);
         return false;
     }
+    cudaEventDestroy(t0); cudaEventDestroy(t1);
     cudaFree(d_obs); cudaFree(d_valid); cudaFree(d_shift3);
     cudaFree(d_prof); cudaFree(d_best);
     return true;

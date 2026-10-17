@@ -21,6 +21,7 @@ struct Options {
     long long from, to;
     double scales[8];
     int nscale;
+    bool worker;
 };
 
 static int load_obs(const char *path, double *obs, unsigned char *valid, int *n) {
@@ -61,6 +62,58 @@ static size_t merge_candidates(const std::vector<std::string> &paths, const char
     return rows.size();
 }
 
+/* 跑一个种子区间: device 为 -1 时按显卡数平分, 否则只用指定卡.
+ * 单块与常驻模式共用, 区别只在于窗口和批大小由 ctx 决定. */
+static bool run_range(const SweepContext &ctx, int device, long long from, long long to) {
+    if (device < 0) {
+        int count = sweep_device_count();
+        if (count <= 0) {
+            fprintf(stderr, "没有可用的 NVIDIA GPU\n");
+            return false;
+        }
+        printf("扫描 %lld..%lld, 容差 %.2f, 阈值 %.3f, 批大小 %d, 使用 %d 块 GPU\n",
+               from, to, ctx.tol, ctx.offer, ctx.batch, count);
+        fflush(stdout);
+        if (!sweep_save_empty("candidates_gpu2.txt")) { fprintf(stderr, "cannot initialize candidates_gpu2.txt\n"); return false; }
+        std::vector<std::string> paths(count);
+        for (int i = 0; i < count; i++) {
+            paths[i] = "candidates_gpu2.dev" + std::to_string(i) + ".txt";
+            if (!sweep_save_empty(paths[i].c_str())) { fprintf(stderr, "cannot initialize %s\n", paths[i].c_str()); return false; }
+        }
+        std::atomic<int> remaining(count);
+        std::atomic<bool> failed(false);
+        std::vector<std::thread> threads;
+        for (int i = 0; i < count; i++) {
+            long long a = from + (to - from) * i / count;
+            long long b = from + (to - from) * (i + 1) / count;
+            threads.emplace_back([&, i, a, b]() {
+                SweepOutput output;
+                if (!sweep_run_device(ctx, i, a, b, paths[i].c_str(), true, output)) failed = true;
+                remaining--;
+            });
+        }
+        size_t merged = 0;
+        while (remaining > 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            size_t current = merge_candidates(paths, "candidates_gpu2.txt", 500000);
+            if (current) merged = current;
+        }
+        for (auto &thread : threads) thread.join();
+        size_t final_count = merge_candidates(paths, "candidates_gpu2.txt", 500000);
+        if (final_count) merged = final_count;
+        printf("批 %lld..%lld 完成, 本批达标 %zu 条, 累计候选 %zu, 进度 100.000%%\n", from, to, merged, merged);
+        fflush(stdout);
+        for (auto &path : paths) std::remove(path.c_str());
+        return !failed;
+    }
+
+    printf("扫描 %lld..%lld, 容差 %.2f, 阈值 %.3f, 批大小 %d, GPU %d\n",
+           from, to, ctx.tol, ctx.offer, ctx.batch, device);
+    fflush(stdout);
+    SweepOutput out;
+    return sweep_run_device(ctx, device, from, to, "candidates_gpu2.txt", false, out);
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) { fprintf(stderr, "用法: sweep.exe <观测文件> [选项]\n"); return 1; }
     double h_obs[MAX_OBS]; unsigned char h_valid[MAX_OBS]; int obs_n = 0;
@@ -69,10 +122,12 @@ int main(int argc, char **argv) {
 
     Options opt;
     opt.tol = 0.5; opt.offer = 0.20; opt.cols = 3550; opt.spawn_lo = 3160; opt.spawn_hi = 3240;
-    opt.marker = 471; opt.check = -1; opt.from = 0; opt.to = 2147483647LL; opt.batch = 400000; opt.device = 0;
+    opt.marker = 471; opt.check = -1; opt.from = 0; opt.to = 2147483647LL; opt.batch = 1000000; opt.device = 0;
     opt.scales[0] = 1.00; opt.scales[1] = 0.97; opt.scales[2] = 1.03; opt.nscale = 3;
+    opt.worker = false;
     for (int i = 2; i < argc; i++) {
-        if (!strcmp(argv[i], "--tol") && i + 1 < argc) opt.tol = atof(argv[++i]);
+        if (!strcmp(argv[i], "--worker")) opt.worker = true;
+        else if (!strcmp(argv[i], "--tol") && i + 1 < argc) opt.tol = atof(argv[++i]);
         else if (!strcmp(argv[i], "--offer") && i + 1 < argc) opt.offer = atof(argv[++i]);
         else if (!strcmp(argv[i], "--cols") && i + 1 < argc) opt.cols = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--spawn-lo") && i + 1 < argc) opt.spawn_lo = atoi(argv[++i]);
@@ -132,53 +187,22 @@ int main(int argc, char **argv) {
         return sweep_check(opt.check, ctx, opt.spawn_lo, opt.spawn_hi, opt.cols, opt.marker);
     }
 
-    if (opt.device == -1) {
-        int count = sweep_device_count();
-        if (count <= 0) {
-            fprintf(stderr, "没有可用的 NVIDIA GPU\n");
-            return 1;
+    if (opt.worker) {
+        /* 常驻模式: 从 stdin 读 "from to", 每块跑完打印确认行.
+         * 工作台按块派发区间, 进程只初始化一次 CUDA 上下文, 省掉每块一次的启动开销. */
+        char line[256];
+        while (fgets(line, sizeof(line), stdin)) {
+            char *p = line;
+            while (*p == ' ' || *p == '\t') p++;
+            if (*p == 'q' || *p == 'Q' || *p == '\0' || *p == '\n' || *p == '\r') break;
+            long long a = 0, b = 0;
+            if (sscanf(p, "%lld %lld", &a, &b) != 2 || b <= a) continue;
+            if (!run_range(ctx, opt.device, a, b)) return 1;
+            printf("块 %lld..%lld 完成\n", a, b);
+            fflush(stdout);
         }
-        printf("扫描 %lld..%lld, 容差 %.2f, 阈值 %.3f, 批大小 %d, 使用 %d 块 GPU\n",
-               opt.from, opt.to, opt.tol, opt.offer, opt.batch, count);
-        fflush(stdout);
-        if (!sweep_save_empty("candidates_gpu2.txt")) { fprintf(stderr, "cannot initialize candidates_gpu2.txt\n"); return 1; }
-        std::vector<std::string> paths(count);
-        for (int i = 0; i < count; i++) {
-            paths[i] = "candidates_gpu2.dev" + std::to_string(i) + ".txt";
-            if (!sweep_save_empty(paths[i].c_str())) { fprintf(stderr, "cannot initialize %s\n", paths[i].c_str()); return 1; }
-        }
-        std::atomic<int> remaining(count);
-        std::atomic<bool> failed(false);
-        std::vector<std::thread> threads;
-        for (int i = 0; i < count; i++) {
-            long long a = opt.from + (opt.to - opt.from) * i / count;
-            long long b = opt.from + (opt.to - opt.from) * (i + 1) / count;
-            threads.emplace_back([&, i, a, b]() {
-                SweepOutput output;
-                if (!sweep_run_device(ctx, i, a, b, paths[i].c_str(), true, output)) failed = true;
-                remaining--;
-            });
-        }
-        size_t merged = 0;
-        while (remaining > 0) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
-            size_t current = merge_candidates(paths, "candidates_gpu2.txt", 500000);
-            if (current) merged = current;
-        }
-        for (auto &thread : threads) thread.join();
-        size_t final_count = merge_candidates(paths, "candidates_gpu2.txt", 500000);
-        if (final_count) merged = final_count;
-        printf("批 %lld..%lld 完成, 本批达标 %zu 条, 累计候选 %zu, 进度 100.000%%\n",
-               opt.from, opt.to, merged, merged);
-        fflush(stdout);
-        for (auto &path : paths) std::remove(path.c_str());
-        return failed ? 1 : 0;
+        return 0;
     }
 
-    printf("扫描 %lld..%lld, 容差 %.2f, 阈值 %.3f, 批大小 %d, GPU %d\n",
-           opt.from, opt.to, opt.tol, opt.offer, opt.batch, opt.device);
-    fflush(stdout);
-    SweepOutput out;
-    if (!sweep_run_device(ctx, opt.device, opt.from, opt.to, "candidates_gpu2.txt", false, out)) return 1;
-    return 0;
+    return run_range(ctx, opt.device, opt.from, opt.to) ? 0 : 1;
 }

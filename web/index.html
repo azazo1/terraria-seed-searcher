@@ -63,7 +63,7 @@
             <label class="field">种子起始值 (包含)<input type="number" id="seed-from" min="0" max="2147483646" step="1" value="0"></label><label class="field">种子结束值 (不含)<input type="number" id="seed-to" min="1" max="2147483647" step="1" value="2147483647"></label>
             <label class="field">出生点世界列下限<input type="number" id="spawn-lo" min="0" max="8399" step="1" value="3180"></label><label class="field">出生点世界列上限<input type="number" id="spawn-hi" min="0" max="8399" step="1" value="3220"></label>
             <label class="field">模拟列数<input type="number" id="search-cols" min="1" max="8400" step="1" value="3400"></label><label class="field">搜索尺度 (英文逗号分隔)<input type="text" id="search-scales" value="1.00"></label>
-            <label class="field">批大小<input type="number" id="search-batch" min="1" max="2147483647" step="1" value="400000"></label><label class="field">GPU 编号 (仅 CUDA, -1 为全部)<input type="number" id="search-device" min="-1" max="1024" step="1" value="0"></label>
+            <label class="field">批大小<input type="number" id="search-batch" min="1" max="2147483647" step="1" value="1000000"></label><label class="field">GPU 编号 (仅 CUDA, -1 为全部)<input type="number" id="search-device" min="-1" max="1024" step="1" value="0"></label>
           </div><p class="hint">默认参数与此前搜索一致. 搜索尺度调整粗筛的列间距, 不是图片缩放. 出生点观测列来自最终观测数据.</p></details>
           <p class="hint">调低最低得分会保留更多候选.</p>
           <p id="start-reason" class="hint warn" role="status" aria-live="polite">正在读取搜索状态...</p>

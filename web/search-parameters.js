@@ -1,5 +1,5 @@
 /* 粗筛设置默认值与校验, 不包含最终观测数据. */
-export const DEFAULT_SEARCH_PARAMETERS = Object.freeze({ tol: .5, offer: .55, range: Object.freeze([0, 2147483647]), spawn_lo: 3180, spawn_hi: 3220, cols: 3400, scales: '1.00', batch: 400000, device: 0 });
+export const DEFAULT_SEARCH_PARAMETERS = Object.freeze({ tol: .5, offer: .55, range: Object.freeze([0, 2147483647]), spawn_lo: 3180, spawn_hi: 3220, cols: 3400, scales: '1.00', batch: 1000000, device: 0 });
 const fields = Object.keys(DEFAULT_SEARCH_PARAMETERS);
 export function normalizeSearchParameters(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw) || fields.some(key => !(key in raw)) || Object.keys(raw).some(key => !fields.includes(key))) throw new Error('搜索参数字段不完整或包含不支持的字段.');
