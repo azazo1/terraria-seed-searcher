@@ -416,6 +416,9 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(200, result)
                 if u.path == "/api/task/stop":
                     manager.stop(task_id)
+                elif u.path == "/api/task/delete":
+                    manager.delete(task_id)
+                    return self._send(200, {"ok": True, "deleted": task_id})
                 elif u.path == "/api/task/heartbeat":
                     return self._send(200, manager.heartbeat(task_id, body.get("owner")))
                 elif u.path == "/api/task/commit":

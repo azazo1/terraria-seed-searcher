@@ -5,6 +5,7 @@ import json
 import logging
 import math
 import re
+import shutil
 import sqlite3
 import subprocess
 import threading
@@ -159,6 +160,20 @@ def candidate_lines(rows):
     return [f"seed={row['seed']} spawn_x={row['spawn']} scale={row['scale']:.9g} score={row['score'] / 10000000:.7f}" for row in rows]
 
 
+STUCK_TRASH = set()
+
+
+def discard_tree(path):
+    """清理已经改名的任务目录, 失败时只报告一次, 不拖累任务列表."""
+    if path in STUCK_TRASH:
+        return
+    try:
+        shutil.rmtree(path)
+    except OSError as error:
+        STUCK_TRASH.add(path)
+        LOG.warning("任务残留目录暂时无法删除: %s (%s)", path.name, error)
+
+
 class TaskManager:
     def __init__(self, root, binaries, webgpu_key):
         self.root = Path(root)
@@ -189,7 +204,10 @@ class TaskManager:
     def _expire(self):
         for task_id, runtime in list(self.runtime.items()):
             if runtime.get("lease_until", float('inf')) < time.monotonic():
-                self.store(task_id).update(status="paused", error="浏览器连接已中断, 可以从最近断点继续.")
+                try:
+                    self.store(task_id).update(status="paused", error="浏览器连接已中断, 可以从最近断点继续.")
+                except (ValueError, sqlite3.DatabaseError):
+                    LOG.warning("中断的浏览器任务无法写回状态: %s", task_id)
                 runtime["lock"].close()
                 del self.runtime[task_id]
 
@@ -200,12 +218,40 @@ class TaskManager:
             if not self.root.exists():
                 return result
             for directory in self.root.iterdir():
-                if re.fullmatch(r"[a-f0-9]{32}", directory.name) and (directory / "task.sqlite").is_file():
+                if directory.name.startswith("trash-"):
+                    discard_tree(directory)
+                elif re.fullmatch(r"[a-f0-9]{32}", directory.name) and (directory / "task.sqlite").is_file():
                     try:
                         result.append(self.summary(directory.name))
                     except (ValueError, sqlite3.DatabaseError):
                         LOG.exception("无法读取搜索任务 %s", directory.name)
             return sorted(result, key=lambda task: task["updated"], reverse=True)
+
+    def delete(self, task_id):
+        """删除任务目录. 运行中的任务必须先停止, 损坏的任务也允许清理.
+
+        改名是删除的原子分界: 之后任务列表立即看不到它, 清理失败只留下
+        trash- 前缀的目录, 不影响服务.
+        """
+        with self.lock:
+            store = self.store(task_id)
+            if not store.directory.is_dir():
+                raise ValueError("搜索任务不存在.")
+            try:
+                live = self.summary(task_id)["status"] in ("running", "stopping")
+            except (ValueError, sqlite3.DatabaseError):
+                live = False
+            if live:
+                raise ValueError("任务正在运行, 请先停止再删除.")
+            # 探测锁证明没有其他服务正在运行这个任务, 随后立即释放.
+            # Windows 上打开着的 run.lock 无法改名, 所以必须先 close.
+            guard = TaskLock(store.directory / "run.lock")
+            guard.close()
+            trash = store.directory.with_name("trash-" + task_id + "-" + uuid.uuid4().hex)
+            store.directory.rename(trash)
+            self.runtime.pop(task_id, None)
+            LOG.info("删除任务 %s, 残留目录等待清理", task_id)
+        discard_tree(trash)
 
     def summary(self, task_id):
         store = self.store(task_id)

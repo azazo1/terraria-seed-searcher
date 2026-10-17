@@ -84,6 +84,27 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(error.exception.code, 404)
         error.exception.close()
 
+    def test_task_delete_endpoint_removes_task_and_refuses_running(self):
+        work = serve.WORK / "task-delete-fixture"
+        with patch.object(serve, "WORK", work):
+            serve.ensure_dirs()
+            observation = {"format": observation_archive.FORMAT, "version": 1, "heights": [0] * 30, "marker": 10}
+            self.call("/api/observation", observation)
+            _, raw = self.call("/api/task/start", {"backend": "webgpu", "parameters": {"range": [100, 110]}})
+            payload = json.loads(raw); task_id = payload["task"]["id"]; owner = payload["owner"]
+            with self.assertRaises(HTTPError) as error:
+                self.call("/api/task/delete", {"id": task_id})
+            self.assertEqual(error.exception.code, 409); error.exception.close()
+            self.call("/api/task/finish", {"id": task_id, "owner": owner})
+            _, raw = self.call("/api/task/delete", {"id": task_id})
+            self.assertEqual(json.loads(raw)["deleted"], task_id)
+            _, raw = self.call("/api/state")
+            self.assertEqual(json.loads(raw)["tasks"], [])
+            with self.assertRaises(HTTPError) as error:
+                self.call("/api/task/delete", {"id": task_id})
+            self.assertEqual(error.exception.code, 409); error.exception.close()
+            serve._TASK_MANAGERS.pop(str(work.resolve()))
+
     def test_save_progress_and_clear_observation(self):
         param = {"version": 1, "frames": [{"id": "a", "src": "frames/a.png", "tile": 20.86, "tileY": 20.86, "x": 1.25, "y": 7.5, "locked": True, "on": True}]}
         self.call("/api/frames", param)
