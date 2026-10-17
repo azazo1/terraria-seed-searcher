@@ -54,7 +54,7 @@ def compile_cuda(output, platform_name, staging, nvcc):
     if platform_name == "windows":
         rc.run(
             [
-                "cl", "/nologo", "/O2", "/std:c++17", "/EHsc", "/MD", "/utf-8",
+                "cl", "/nologo", "/O2", "/std:c++17", "/EHsc", "/MT", "/utf-8",
                 "/c", "src/cuda/sweep_main.cpp", f"/Fo:{main_obj}",
             ],
             capture=False,
