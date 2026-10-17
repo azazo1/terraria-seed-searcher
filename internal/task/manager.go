@@ -320,6 +320,9 @@ func (m *Manager) Create(backend string, rawParameters any, obs observation.Obse
 	if err != nil {
 		return Launch{}, err
 	}
+	// 出生点是世界规则量 (中心加减 5), 只有标注列会偏, 所以窗口由服务端推导,
+	// 用户不需要也不应该去调这个范围.
+	settings.SpawnLo, settings.SpawnHi = SpawnWindow(settings.Cols)
 	if err := ValidateCreate(settings, obs); err != nil {
 		return Launch{}, err
 	}

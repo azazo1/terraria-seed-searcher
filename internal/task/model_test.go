@@ -15,7 +15,7 @@ func TestParseParametersDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseParameters: %v", err)
 	}
-	if settings.Device != 0 || settings.SpawnLo != 3180 || settings.SpawnHi != 3220 || settings.Cols != 3400 {
+	if settings.Device != 0 || settings.SpawnLo != Defaults().SpawnLo || settings.SpawnHi != Defaults().SpawnHi || settings.Cols != 3400 {
 		t.Fatalf("unexpected defaults: %+v", settings)
 	}
 	if settings.Range != [2]int64{0, 1000} {
@@ -63,5 +63,16 @@ func TestValidateCreateRequiresEnoughColumns(t *testing.T) {
 	obs := observation.Observation{Format: observation.Format, Version: observation.Version, Heights: make([]float64, 10), Marker: 0}
 	if err := ValidateCreate(settings, obs); err == nil {
 		t.Fatal("too few valid columns must be rejected")
+	}
+}
+
+// 出生点由世界规则确定: 中世界中心 3200 加减 5, 再叠加标注容差.
+func TestSpawnWindow(t *testing.T) {
+	lo, hi := SpawnWindow(3400)
+	if lo != 3131 || hi != 3269 {
+		t.Fatalf("unexpected spawn window: %d..%d", lo, hi)
+	}
+	if lo, hi := SpawnWindow(3200); hi != 3199 || lo != 3131 {
+		t.Fatalf("spawn window must stay inside cols: %d..%d", lo, hi)
 	}
 }

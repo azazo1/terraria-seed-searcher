@@ -103,12 +103,12 @@ just build
 # 单卡
 ./sweep data/observed_manual.txt --range 0 1073741824 \
     --tol 0.5 --offer 0.55 --batch 1000000 --device 0 \
-    --marker 141 --spawn-lo 3180 --spawn-hi 3220 --cols 3400
+    --marker 141 --spawn-lo 3131 --spawn-hi 3269 --cols 3400
 
 # 多卡, 自动平分种子区间
 ./sweep data/observed_manual.txt --range 0 2147483647 \
     --tol 0.5 --offer 0.55 --batch 1000000 --device all \
-    --marker 141 --spawn-lo 3180 --spawn-hi 3220 --cols 3400
+    --marker 141 --spawn-lo 3131 --spawn-hi 3269 --cols 3400
 ```
 
 工作台里的 GPU 编号填 `-1` 等价于 `--device all`.
@@ -118,7 +118,7 @@ just build
 | 参数 | 含义 |
 | --- | --- |
 | `--marker` | 出生点在观测剖面里的列号 |
-| `--spawn-lo` / `--spawn-hi` | 出生点的世界列范围 (**不是**减去 marker 后的值) |
+| `--spawn-lo` / `--spawn-hi` | 出生点的世界列范围 (**不是**减去 marker 后的值). 工作台会自动推导, 命令行需要手动给 |
 | `--cols` | 需要模拟到第几列 |
 | `--tol` | 命中判据的容差, 单位格 |
 | `--offer` | 只保留分数高于此值的种子 |

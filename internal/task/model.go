@@ -26,7 +26,28 @@ const (
 	CUDABlock = 1000000
 	// MLX 每次启动都要编译 Metal 内核, 工作块需要足够大才能摊薄固定开销.
 	MLXBlock = 4000000
+	// 世界宽度固定为 6400 (中世界). 出生点由 WorldGen 的 SpawnPoint pass 定在
+	// maxTilesX/2 + genRand.Next(-5, 5), 而世界中心 0.48W 到 0.52W 被强制成平台,
+	// 两个扩大范围的条件都不会触发, 所以出生点恒在 3200 加减 5.
+	worldWidth  = 6400
+	spawnJitter = 5
+	// 容差吸收标注列与真实出生点之间的偏差. 实测一次标偏 38 列的观测, 取 64 仍有余量.
+	spawnTolerance = 64
 )
+
+// SpawnWindow 给出工作台自动使用的出生点世界列范围.
+func SpawnWindow(cols int) (int, int) {
+	center := worldWidth / 2
+	lo := center - spawnJitter - spawnTolerance
+	hi := center + spawnJitter + spawnTolerance
+	if lo < 0 {
+		lo = 0
+	}
+	if hi > cols-1 {
+		hi = cols - 1
+	}
+	return lo, hi
+}
 
 // CandidateFiles 是各后端的工作目录候选文件名.
 var CandidateFiles = map[string]string{
@@ -53,9 +74,10 @@ type Parameters struct {
 	Device  int      `json:"device"`
 }
 
-// Defaults 与旧版工作台保持一致.
+// Defaults 与旧版工作台保持一致. 出生点范围按世界规则推导, 不写死.
 func Defaults() Parameters {
-	return Parameters{Tol: .5, Offer: .55, Range: [2]int64{0, 2147483647}, SpawnLo: 3180, SpawnHi: 3220, Cols: 3400, Scales: "1.00", Batch: 1000000, Device: 0}
+	lo, hi := SpawnWindow(3400)
+	return Parameters{Tol: .5, Offer: .55, Range: [2]int64{0, 2147483647}, SpawnLo: lo, SpawnHi: hi, Cols: 3400, Scales: "1.00", Batch: 1000000, Device: 0}
 }
 
 // Meta 是任务元数据.
