@@ -15,7 +15,7 @@ web:
 # just build
 # 编译 CUDA 搜索器. 需要在带 nvcc 的机器上执行 (本机 macOS 无 CUDA, 会失败).
 build:
-    nvcc -O3 -arch=sm_89 -o sweep2 src/cuda/sweep2.cu -lm
+    nvcc -O3 -arch=sm_89 -o {{if os() == "windows" { "sweep2.exe" } else { "sweep2" }}} src/cuda/sweep2.cu
 
 # 编译主机多线程 CPU 搜索器, 无需 CUDA
 build-cpu:

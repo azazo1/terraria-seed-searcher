@@ -76,10 +76,10 @@ CPU 和 WebGPU 当前支持 6400 x 1800 中世界, 最多 700 个观测列且至
 
 ## 快速上手
 
-搜索需要 CUDA 环境. 以本项目的路径为例:
+使用主机 CUDA 后端时, 先在 CUDA 环境构建搜索器. Windows 使用能找到 `nvcc` 和 MSVC `cl` 的开发者终端, 输出为仓库根目录的 `sweep2.exe`; Linux 输出为 `sweep2`. 构建命令不需要 `-lm`, Windows 会将它解释为不存在的 `m.lib`.
 
 ```shell
-nvcc -O3 -arch=sm_89 -o sweep2 src/cuda/sweep2.cu -lm
+just build
 
 # 全空间分两半并行 (两块卡各一半)
 ./sweep2 data/observed_manual.txt --range 0 1073741824 \
