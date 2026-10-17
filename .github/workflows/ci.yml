@@ -187,14 +187,14 @@ jobs:
           enable-cache: false
 
       - name: 准备 CUDA 缓存目录
-        if: matrix.cuda && matrix.platform == 'linux' && (needs.version.outputs.is_release == 'true' || github.event_name == 'workflow_dispatch')
+        if: matrix.cuda && matrix.platform == 'linux'
         shell: bash
         run: |
           sudo mkdir -p "${{ matrix.cuda_dir }}"
           sudo chown -R "$USER" "${{ matrix.cuda_dir }}"
 
       - name: 恢复 CUDA Toolkit 缓存
-        if: matrix.cuda && (needs.version.outputs.is_release == 'true' || github.event_name == 'workflow_dispatch')
+        if: matrix.cuda
         id: cuda-cache
         uses: actions/cache@v6
         with:
@@ -202,7 +202,7 @@ jobs:
           key: cuda-12.8.1-${{ runner.os }}-sub-v1
 
       - name: 安装 CUDA Toolkit
-        if: matrix.cuda && (needs.version.outputs.is_release == 'true' || github.event_name == 'workflow_dispatch') && steps.cuda-cache.outputs.cache-hit != 'true'
+        if: matrix.cuda && steps.cuda-cache.outputs.cache-hit != 'true'
         uses: Jimver/cuda-toolkit@v0.2.36
         with:
           cuda: "12.8.1"
@@ -211,7 +211,7 @@ jobs:
           log-file-suffix: ${{ matrix.os }}.txt
 
       - name: 配置缓存的 CUDA
-        if: matrix.cuda && (needs.version.outputs.is_release == 'true' || github.event_name == 'workflow_dispatch') && steps.cuda-cache.outputs.cache-hit == 'true'
+        if: matrix.cuda && steps.cuda-cache.outputs.cache-hit == 'true'
         shell: bash
         run: |
           printf 'CUDA_PATH=%s\n' "${{ matrix.cuda_dir }}" >> "$GITHUB_ENV"
