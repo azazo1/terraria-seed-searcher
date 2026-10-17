@@ -176,7 +176,7 @@ function renderTasks(st) {
 }
 function renderState(st) {
   if (st.param) st = { ...st, param: migrateParam(st.param) };
-  state = st; renderTasks(st); $('connection').textContent = '已连接 · ' + new Date().toLocaleTimeString('zh-CN', { hour12: false });
+  state = st; renderTasks(st); $('connection').textContent = '已连接 · ' + new Date().toLocaleTimeString('zh-CN', { hour12: false }); $('version').textContent = st.version || '';
   const names = st.frames || [], key = JSON.stringify(names);
   if (key !== frameKey) { frameKey = key; renderFrames(names); }
   $('frame-count').textContent = `${names.length} 张`; $('go-grid').disabled = !names.length || uploading;
@@ -188,7 +188,7 @@ function renderState(st) {
   const sweep = st.sweep || {}, obs = st.observed;
   $('nav-search').textContent = sweep.running ? '搜索进行中' : obs ? '观测已就绪' : '等待标注';
   $('nav-candidates').textContent = candidateSize(st) ? `${Math.round(candidateSize(st) / 1024)} KB 结果` : '暂无候选';
-  kv($('search-info'), [['搜索器', st.searcher_built ? '已编译' : '未编译, 请先在 CUDA 机器运行 just build'], ['观测', obs ? `${obs.valid} 个有效列 / ${obs.columns} 列` : '尚无有效观测'], ['出生点列', obs?.marker ?? '-'], ['状态', sweep.running ? `运行中 ${duration(sweep.elapsed)}` : '空闲']]);
+  kv($('search-info'), [['搜索器', st.searcher_built ? '已就绪' : '未找到, 请运行 just build 或使用发布包'], ['观测', obs ? `${obs.valid} 个有效列 / ${obs.columns} 列` : '尚无有效观测'], ['出生点列', obs?.marker ?? '-'], ['状态', sweep.running ? `运行中 ${duration(sweep.elapsed)}` : '空闲']]);
   $('diagnostic').textContent = obs ? `台阶率 ${obs.step_rate}%. ${obs.step_rate < 3 ? '偏低, 建议检查格宽.' : obs.step_rate > 20 ? '偏高, 建议检查标注.' : '可回到标注步骤继续检查.'}` : '请先在标注步骤标出地表, 观测会自动生成.';
   if (obs?.source === 'import') $('diagnostic').textContent = `台阶率 ${obs.step_rate}%. 已导入最终观测, 无需截图或标注画布即可搜索.`;
   if (sweep.running) $('search-backend').value = sweep.backend || 'cuda';
@@ -200,9 +200,9 @@ function renderState(st) {
   if (transferring) reasons.push({ code: 'transferring', message: '正在导入或导出观测, 请等待操作完成.' });
   if (running) reasons.push({ code: 'running', message: '已有搜索正在运行. 请先停止当前搜索, 再开始新的搜索.' });
   if (!obs) reasons.push({ code: 'observation', message: '尚无最终观测数据. 请先完成地表标注, 或在搜索准备卡片导入观测数据.' });
-  if (backend === 'cpu' && !st.cpu_searcher_built) reasons.push({ code: 'cpu-missing', message: `主机 CPU 搜索器不存在. 请在运行工作台服务的主机上运行 just build-cpu. 预期文件: ${st.searcher_paths?.cpu || '仓库根目录的 sweep-cpu (Windows 为 sweep-cpu.exe)'}.` });
+  if (backend === 'cpu' && !st.cpu_searcher_built) reasons.push({ code: 'cpu-missing', message: `主机 CPU 搜索器不存在. 请在运行工作台服务的主机上运行 just build-cpu. 预期文件: ${st.searcher_paths?.cpu || '可执行文件旁的 sweep-cpu (Windows 为 sweep-cpu.exe)'}.` });
   if (backend === 'mlx' && !st.mlx_searcher_built) reasons.push({ code: 'mlx-missing', message: `主机 MLX 搜索器不存在. 请在 macOS 上用 homebrew 安装 mlx 和 mlx-c 后运行 just build-mlx. 预期文件: ${st.searcher_paths?.mlx || '仓库根目录的 sweep-mlx'}. 该后端只支持 Apple GPU.` });
-  if (backend === 'cuda' && !st.searcher_built) reasons.push({ code: 'cuda-missing', message: `主机 CUDA 搜索器不存在. 请先在运行工作台服务的主机上编译 CUDA 搜索器, 并将产物放在预期位置: ${st.searcher_paths?.cuda || '仓库根目录的 sweep2 (Windows 为 sweep2.exe)'}. 仅切换到 CUDA 或安装 CUDA 不会生成搜索器.` });
+  if (backend === 'cuda' && !st.searcher_built) reasons.push({ code: 'cuda-missing', message: `主机 CUDA 搜索器不存在. 请先准备 CUDA 搜索器, 并将产物放在预期位置: ${st.searcher_paths?.cuda || '可执行文件旁的 sweep (Windows 为 sweep.exe)'}. 发布包已包含该文件; 源码构建请运行 just build.` });
   if (backend === 'webgpu' && !webGpuSupported) reasons.push({ code: 'webgpu-unavailable', message: '当前环境未提供 WebGPU. 请使用支持 WebGPU 的浏览器并通过 localhost 或 HTTPS 打开, 或选择主机 CPU / CUDA.' });
   setStartReasons(reasons);
   $('stop').disabled = !running; $('search-backend').disabled = running || transferring || startingSearch;
@@ -215,10 +215,10 @@ function renderState(st) {
     kv($('search-info'), [['计算方式', '浏览器 GPU / WebGPU'], ['观测', obs ? `${obs.valid} 个有效列 / ${obs.columns} 列` : '尚无有效观测'], ['出生点列', obs?.marker ?? '-'], ['状态', browserSearch.running ? '运行中' : '空闲']]);
   } else if (backend === 'cpu') {
     $('nav-candidates').textContent = candidateSize(st) ? `${Math.round(candidateSize(st) / 1024)} KB CPU 结果` : '暂无 CPU 候选';
-    kv($('search-info'), [['计算方式', '主机 CPU'], ['搜索器', st.cpu_searcher_built ? '已编译' : '未编译, 请先运行 just build-cpu'], ['观测', obs ? `${obs.valid} 个有效列 / ${obs.columns} 列` : '尚无有效观测'], ['出生点列', obs?.marker ?? '-'], ['状态', sweep.running ? `运行中 ${duration(sweep.elapsed)}` : '空闲']]);
+    kv($('search-info'), [['计算方式', '主机 CPU'], ['搜索器', st.cpu_searcher_built ? '已就绪' : '未找到, 请运行 just build-cpu'], ['观测', obs ? `${obs.valid} 个有效列 / ${obs.columns} 列` : '尚无有效观测'], ['出生点列', obs?.marker ?? '-'], ['状态', sweep.running ? `运行中 ${duration(sweep.elapsed)}` : '空闲']]);
   } else if (backend === 'mlx') {
     $('nav-candidates').textContent = candidateSize(st) ? `${Math.round(candidateSize(st) / 1024)} KB Apple GPU 结果` : '暂无 Apple GPU 候选';
-    kv($('search-info'), [['计算方式', '主机 Apple GPU / MLX'], ['搜索器', st.mlx_searcher_built ? '已编译' : '未编译, 请先运行 just build-mlx'], ['观测', obs ? `${obs.valid} 个有效列 / ${obs.columns} 列` : '尚无有效观测'], ['出生点列', obs?.marker ?? '-'], ['状态', sweep.running ? `运行中 ${duration(sweep.elapsed)}` : '空闲']]);
+    kv($('search-info'), [['计算方式', '主机 Apple GPU / MLX'], ['搜索器', st.mlx_searcher_built ? '已就绪' : '未找到, 请运行 just build-mlx'], ['观测', obs ? `${obs.valid} 个有效列 / ${obs.columns} 列` : '尚无有效观测'], ['出生点列', obs?.marker ?? '-'], ['状态', sweep.running ? `运行中 ${duration(sweep.elapsed)}` : '空闲']]);
   }
   if (task) $('nav-candidates').textContent = `${task.backend} 累计 ${task.progress.candidates || 0} 个候选`;
   if ((active === 'search' && sweep.running) || (lastRun && !sweep.running)) loadLog().catch(e => toast(e.message, true));

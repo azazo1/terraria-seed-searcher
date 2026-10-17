@@ -1,13 +1,12 @@
 # 构建产物
 build/
+dist/
 *.o
 *.exe
 sweep
-sweep2
 sweep-cpu
 sweep-mlx
-sweep2_large
-sweep2_small
+terraria-seed-searcher
 
 # 临时文件
 .tmp/

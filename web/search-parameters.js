@@ -9,7 +9,7 @@ export function normalizeSearchParameters(raw) {
     return value;
   };
   if (!Array.isArray(raw.range) || raw.range.length !== 2 || raw.range.some(value => !Number.isSafeInteger(value) || value < 0 || value > 2147483647) || raw.range[0] >= raw.range[1]) throw new Error('种子范围必须是递增的两个非负整数, 结束值不包含在范围内.');
-  const result = { tol: number('tol', .01, 10), offer: number('offer', 0, 1), range: [...raw.range], spawn_lo: number('spawn_lo', 0, 8399, true), spawn_hi: number('spawn_hi', 0, 8399, true), cols: number('cols', 1, 8400, true), scales: raw.scales, batch: number('batch', 1, 2147483647, true), device: number('device', 0, 1024, true) };
+  const result = { tol: number('tol', .01, 10), offer: number('offer', 0, 1), range: [...raw.range], spawn_lo: number('spawn_lo', 0, 8399, true), spawn_hi: number('spawn_hi', 0, 8399, true), cols: number('cols', 1, 8400, true), scales: raw.scales, batch: number('batch', 1, 2147483647, true), device: number('device', -1, 1024, true) };
   if (result.spawn_lo > result.spawn_hi || result.spawn_hi >= result.cols) throw new Error('出生点范围必须递增或相等, 且不能超出模拟列数.');
   if (typeof result.scales !== 'string') throw new Error('搜索尺度必须是英文逗号分隔的数值.');
   const scales = result.scales.split(',').map(s => s.trim());

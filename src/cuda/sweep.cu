@@ -1,23 +1,34 @@
 /* 泰拉瑞亚世界种子反查: CUDA 版.
  *
- * 与 tools/sweep.c 的算法完全一致 (同一个 UnifiedRandom, 同一个初始化段, 同一个 TerrainPass),
- * 区别是这里不保存整条剖面, 而是"边生成边对齐": 每个线程固定一个横向偏移 (spawn_x - 标记列),
- * 生成到该偏移对应的观测列时立刻比较, 用 7 格直方图在线估计纵向偏移.
+ * 双内核搜索: profile_kernel 每个种子只模拟一次, 把需要的列窗口写进显存;
+ * score_kernel 再按种子并行评分. 单卡用 --device N, 多卡用 --device all 自动平分种子区间.
  *
  * 编译 (在 WSL 里调用 Windows 侧 nvcc):
  *   "/mnt/c/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.4/bin/nvcc.exe" \
  *     -O3 -arch=sm_89 -fmad=false sweep.cu -o sweep.exe
  *
  * 用法: sweep.exe <观测文件> [--scale 1.0] [--cols 3550] [--tol 1.5] [--offer 0.55]
- *                  [--spawn-lo 3160] [--spawn-hi 3240] [--check <seed>]
+ *                  [--spawn-lo 3160] [--spawn-hi 3240] [--device all] [--check <seed>]
+ *   候选写在工作目录的 candidates_gpu2.txt; 多卡时每块卡写 candidates_gpu2.devN.txt,
+ *   主线程再合并到 candidates_gpu2.txt.
  */
+#include "../search/candidate-file.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
 #include <vector>
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <string>
+#include <thread>
+#ifndef TERRARIA_HOST_ONLY
 #include <cuda_runtime.h>
+#else
+#define __device__
+#define __host__
+#endif
 
 /* 世界尺寸. 默认中世界; 用 -DWORLD_LARGE / -DWORLD_SMALL 编译出对应尺寸的版本 */
 #if defined(WORLD_LARGE)
@@ -35,7 +46,9 @@
 
 /* ---------------- UnifiedRandom ---------------- */
 
-struct RNG { int *sa; unsigned *inext; };
+/* 状态槽位号按 55 循环确定推进, 所以下一个样本要读的两个槽位可以提前读进寄存器,
+ * 让共享内存延迟与当前样本的运算和分支重叠. */
+struct RNG { int *sa; unsigned *inext; int preA, preB; unsigned preIdx; };
 
 __device__ __host__ static inline int i32d(long long x) { return (int)(unsigned int)(x & 0xFFFFFFFFu); }
 
@@ -58,18 +71,28 @@ __device__ __host__ static void rng_seed(RNG *r, int seed) {
             if (r->sa[l] < 0) r->sa[l] = i32d((long long)r->sa[l] + INT_MAX_);
         }
     *r->inext = 0;
+    r->preIdx = 1u;
+    r->preA = r->sa[1];
+    r->preB = r->sa[22];
 }
 
+/* 一次样本. 槽位号只依赖计数, 不依赖取值, 所以可以把下一步要读的两个槽位提前读好.
+ * 这只改变读取顺序, 不改变取值; GPU 上让共享内存延迟与当前样本的分支重叠, 实测约 1.2 倍.
+ * 主机上同一改动的差异落在测量噪声内, 因此两条路径共用. */
 __device__ __host__ static inline int rng_sample(RNG *r) {
-    unsigned num = *r->inext + 1u;
-    if (num > 55u) num = 1u;
-    unsigned num2 = num + 21u;
-    if (num2 > 55u) num2 -= 55u;
-    int num3 = i32d((long long)r->sa[num] - r->sa[num2]);
+    unsigned num = r->preIdx;
+    int num3 = i32d((long long)r->preA - r->preB);
     if (num3 == INT_MAX_) num3--;
     num3 = i32d((long long)num3 + ((num3 >> 31) & INT_MAX_));
+    unsigned next = num + 1u;
+    if (next > 55u) next = 1u;
+    unsigned nextB = next + 21u;
+    if (nextB > 55u) nextB -= 55u;
+    r->preA = r->sa[next];
+    r->preB = r->sa[nextB];
     r->sa[num] = num3;
     *r->inext = num;
+    r->preIdx = next;
     return num3;
 }
 
@@ -77,12 +100,25 @@ __device__ __host__ static inline double rng_sample_d(RNG *r) {
     return (double)rng_sample(r) * 4.656612875245797E-10;
 }
 
+/* Next(max) 的原语义是 (int)(Sample() * max), 而 Sample() 的乘数正好是 1/2147483647
+ * 的双精度表示, 因此它就是 sample * max / 2147483647 向下取整.
+ * 双精度两次舍入的绝对误差不超过 2^-52 * max; 当 max <= 2^20 时该误差 (2.4e-10)
+ * 仍小于任何非整数结果到整数的距离 (至少 1/2147483647), 且 2147483647 是质数不会
+ * 整除 sample * max, 所以整数除法与双精度式逐位等价.
+ * 更大的 max 保留原来的双精度式: 已实测 max = 2147483647 时双精度会少 1. */
+#define RNG_INT_MAX 1048576
+
+__device__ __host__ static inline int rng_scaled(unsigned sample, int delta) {
+    if (delta <= RNG_INT_MAX) return (int)((unsigned long long)sample * (unsigned)delta / 2147483647ull);
+    return (int)((double)sample * 4.656612875245797E-10 * (double)delta);
+}
+
 __device__ __host__ static inline int rng_next(RNG *r, int maxValue) {
-    return (int)(rng_sample_d(r) * (double)maxValue);
+    return rng_scaled((unsigned)rng_sample(r), maxValue);
 }
 
 __device__ __host__ static inline int rng_next2(RNG *r, int minValue, int maxValue) {
-    return (int)(rng_sample_d(r) * (double)((long long)maxValue - minValue)) + minValue;
+    return rng_scaled((unsigned)rng_sample(r), maxValue - minValue) + minValue;
 }
 
 /* ---------------- 初始化段 ---------------- */
@@ -190,15 +226,31 @@ __device__ __host__ static int setup_beach(RNG *rp, int seed, int w, int *out_ri
 
 /* ---------------- TerrainPass ---------------- */
 
-__device__ __host__ static double surface_offset(RNG *r, int feature) {
-    double num = 0.0;
-    switch (feature) {
-        case 0: while (rng_next(r, 7) == 0) num += rng_next2(r, -1, 2); break;
-        case 1: while (rng_next(r, 4) == 0) num -= 1.0; while (rng_next(r, 10) == 0) num += 1.0; break;
-        case 2: while (rng_next(r, 4) == 0) num += 1.0; while (rng_next(r, 10) == 0) num -= 1.0; break;
-        case 3: while (rng_next(r, 2) == 0) num -= 1.0; while (rng_next(r, 6) == 0) num += 1.0; break;
-        default: while (rng_next(r, 2) == 0) num += 1.0; while (rng_next(r, 5) == 0) num -= 1.0; break;
+/* next(k) == 0 等价于 sample * k < 2^31 - 1, 也就是 sample <= (2^31 - 2) / k.
+ * 这里的 k 全是编译期常量, 阈值被折叠成一条整数比较, 省掉一次乘法与常数除法. */
+__device__ __host__ static inline bool rng_zero(RNG *r, int k) {
+    return (unsigned)rng_sample(r) <= (unsigned)(2147483646u / (unsigned)k);
+}
+
+/* 坡度增量始终是整数, 用 int 累加后一次性并入地表高度, 结果逐位不变.
+ *
+ * 原来的 5 路 switch 由逐 lane 数据决定, 一个 warp 里几乎每种情况都会出现, 硬件只能把
+ * 各条路径串行跑一遍. 1 到 4 号特征的结构相同 (两个阈值循环), 改成无分支地选出参数;
+ * 只有特征 0 的循环体要多抽一个增量, 单独保留一条分支. 实测 0.88 s 降到 0.69 s. */
+__device__ __host__ static int surface_offset(RNG *r, int feature) {
+    int num = 0;
+    if (feature == 0) {
+        while (rng_zero(r, 7)) num += rng_next2(r, -1, 2);
+        return num;
     }
+    /* 阈值就是 (2^31 - 2) / k, 与 rng_zero 的定义一致, 这里展开成常量. */
+    const bool pair = feature <= 2;
+    const unsigned limit1 = pair ? 536870911u : 1073741823u;                                /* k = 4 或 2 */
+    const unsigned limit2 = pair ? 214748364u : (feature == 3 ? 357913941u : 429496729u);   /* k = 10, 6, 5 */
+    const int step1 = (feature == 1 || feature == 3) ? -1 : 1;
+    const int step2 = -step1;
+    while ((unsigned)rng_sample(r) <= limit1) num += step1;
+    while ((unsigned)rng_sample(r) <= limit2) num += step2;
     return num;
 }
 
@@ -270,75 +322,126 @@ __device__ __host__ static double stream_score(RNG *rp, int seed, int left, int 
     return cnt > 0 ? (double)best / (double)cnt : -1.0;
 }
 
-/* ---------------- kernel ---------------- */
+/* ================= 新版 GPU 扫描: 剖面只算一次 =================
+ *
+ * 旧版的瓶颈: 每个横向偏移一个 kernel, 每个种子被完整重新模拟 81 次.
+ * 新版拆成两个 kernel:
+ *   A) profile_kernel: 每个种子模拟一次, 把需要的列窗口 [w0, w1) 写进全局缓冲.
+ *      该窗口覆盖所有偏移与尺度需要的列 (偏移范围宽 + 最大尺度映射).
+ *   B) score_kernel: 每个种子一个 block, 剖面先拷进共享内存, 再由 256 个线程
+ *      并行处理 偏移数 x 尺度数 个组合, 每个组合算一个命中率, 用 atomicMax 归并到
+ *      每种子一个"最佳组合"。
+ * 这样模拟只做一次, 且 B 的并行度是 种子数 x 243。
+ */
 
-struct Args {
-    const double *obs;
+/* 主机 CPU 与 CUDA 共用逐列生成逻辑, 保持随机数消费顺序一致. */
+__device__ __host__ static void generate_profile(RNG *rp, int seed, int cols, int w0, int w1, int *dst) {
+    int right;
+    int left = setup_beach(rp, seed, W_MEDIUM, &right);
+    rng_seed(rp, seed);
+    /* 初始地表高度与 rock 高度都不进入输出, 只保留随机数消耗.
+     * 地表改用 1/8 格整数: 首列必被限制到 306, 之后增量都是整数, 因此整数累加精确. */
+    (void)rng_next2(rp, 90, 110);
+    (void)rng_next2(rp, 90, 110);
+    int surface = 0;
+    int remaining = left + 5, feature = 0;
+    /* 窗口右侧之后的地形不会写入输出, 也不会再被读取, 无需继续推进. */
+    int end = w1 < cols ? w1 : cols;
+    for (int x = 0; x < end; x++) {
+        if (remaining <= 0) {
+            feature = rng_next2(rp, 0, 5);
+            remaining = rng_next2(rp, 5, 40);
+            if (feature == 0) remaining *= (int)((double)rng_next2(rp, 5, 30) * 0.2);
+        }
+        remaining--;
+        /* 6400 * 0.55 的双精度舍入略大于 3520, 所以原条件实际包含 x = 3520, 这里保留该边界. */
+        if (x > 2880 && x <= 3520 && (feature == 3 || feature == 4)) feature = rng_next(rp, 3);
+        if (x > 3072 && x < 3328) feature = 0;
+        surface += surface_offset(rp, feature) * 8;
+        if (x < left + 5 || x > right - 5) {
+            if (surface < 306 * 8) surface = 306 * 8;
+            else if (surface > 414 * 8) surface = 414 * 8;
+        } else if (surface < 306 * 8) { surface = 306 * 8; remaining = 0; }
+        else if (surface > 468 * 8) { surface = 468 * 8; remaining = 0; }
+        while (rng_zero(rp, 3)) (void)rng_next2(rp, -2, 3);
+        if (x >= w0 && x < w1) dst[x - w0] = surface;
+    }
+}
+
+#ifndef TERRARIA_HOST_ONLY
+struct Args2 {
+    const int *obs8;          /* 观测高度, 单位 1/8 格 */
     const unsigned char *valid;
-    const int *shift;
+    const int *shift3;        /* 3 个尺度, 布局 [s * obs_n + j] */
     int obs_n;
+    int scale_n;
     int cols;
-    int base;              /* 该 block 使用的横向偏移 */
-    int seed_from, seed_to;
+    int w0, w1;               /* 剖面窗口 */
+    int base_lo, nbase;
+    int seed_from, seed_to;   /* 本批种子区间 */
     double tol, offer;
-    int *out_seed, *out_base;
-    float *out_score;
-    int *out_count;
-    int max_out;
-    float *dbg;          /* 调试: 前 dbg_n 个种子的 得分/命中/有效列 */
-    int dbg_n;
+    int *prof;                /* batch x (w1 - w0) */
+    unsigned long long *best; /* 每种子一个打包结果 */
 };
 
-__global__ void sweep_kernel(Args a) {
+/* 每线程一个种子, 模拟一次, 把窗口内的列写出去 */
+__global__ void profile_kernel(Args2 a) {
     extern __shared__ int smem[];
     int *sa = smem + threadIdx.x * 56;
     unsigned *inext = (unsigned *)(smem + blockDim.x * 56) + threadIdx.x;
     for (int i = 0; i < 56; i++) sa[i] = 0;
     *inext = 0;
     RNG rng = { sa, inext };
-    int seed = a.seed_from + blockIdx.x * blockDim.x + threadIdx.x;
+    int nthis = a.seed_to - a.seed_from;
+    int W = a.w1 - a.w0;
     int stride = gridDim.x * blockDim.x;
-    for (; seed < a.seed_to; seed += stride) {
-        if (a.dbg && seed < a.seed_from + a.dbg_n) {
-            int k = (seed - a.seed_from) * 6;
-            a.dbg[k + 5] = -777.0f;            /* 入口标记 */
-        }
-        int right;
-        int left = setup_beach(&rng, seed, W_MEDIUM, &right);
-        int hits = 0, cnt = 0;
-        double sc = stream_score(&rng, seed, left, right, a.cols, a.base, a.obs, a.valid, a.shift,
-                                 a.obs_n, a.tol, &hits, &cnt);
-        if (a.dbg && seed < a.seed_from + a.dbg_n) {
-            int k = (seed - a.seed_from) * 6;
-            a.dbg[k] = (float)sc; a.dbg[k + 1] = (float)hits; a.dbg[k + 2] = (float)cnt;
-            a.dbg[k + 3] = (float)left; a.dbg[k + 4] = (float)right;
-        }
-        if (sc >= a.offer && cnt >= 200) {
-            int slot = atomicAdd(a.out_count, 1);
-            if (slot < a.max_out) {
-                a.out_seed[slot] = seed;
-                a.out_base[slot] = a.base;
-                a.out_score[slot] = (float)sc;
-            }
-        }
+    for (int idx = blockIdx.x * blockDim.x + threadIdx.x; idx < nthis; idx += stride) {
+        int seed = a.seed_from + idx;
+        generate_profile(&rng, seed, a.cols, a.w0, a.w1, a.prof + (long long)idx * W);
     }
 }
 
-/* 随机数转储内核: 每个线程把自己的前 N 个 InternalSample 与若干 Next 结果写出来 */
-__global__ void rng_dump_kernel(int seed0, int n, int per_seed, int *out) {
-    int t = blockIdx.x * blockDim.x + threadIdx.x;
-    if (t >= n) return;
-    int sa[56]; unsigned inext = 0;
-    RNG r = { sa, &inext };
-    rng_seed(&r, seed0 + t);
-    int *o = out + t * per_seed;
-    for (int k = 0; k < 12; k++) o[k] = rng_sample(&r);
-    o[12] = rng_next(&r, 14);
-    o[13] = rng_next2(&r, 90, 110);
-    o[14] = rng_next2(&r, 100, 200);
-    o[15] = rng_next2(&r, -1, 2);
-    o[16] = rng_next(&r, 7);
-    o[17] = rng_next2(&r, 20, 40);
+/* 每个种子一个 block: 共享内存里放剖面, 线程分摊 偏移 x 尺度 组合 */
+__global__ void score_kernel(Args2 a) {
+    extern __shared__ int sp[];
+    int idx = blockIdx.x;
+    if (idx >= a.seed_to - a.seed_from) return;
+    int W = a.w1 - a.w0;
+    const int *src = a.prof + (long long)idx * W;
+    for (int t = threadIdx.x; t < W; t += blockDim.x) sp[t] = src[t];
+    __syncthreads();
+    int nb = a.nbase * a.scale_n;
+    for (int q = threadIdx.x; q < nb; q += blockDim.x) {
+        int b = q / a.scale_n;
+        int s = q - b * a.scale_n;
+        int base = a.base_lo + b;
+        const int *sh = a.shift3 + s * a.obs_n;
+        int hist[33];                       /* 偏移 d 在 [-16, 16] 的整数分布 */
+        for (int k = 0; k < 33; k++) hist[k] = 0;
+        int off = 0, cnt = 0;
+        bool have = false;
+        for (int j = 0; j < a.obs_n; j++) {
+            if (!a.valid[j]) continue;
+            int k = base + sh[j] - a.w0;
+            if (k < 0 || k >= W) continue;
+            int d = sp[k] - a.obs8[j];
+            if (!have) { off = d; have = true; }
+            d -= off;
+            if (d >= -16 && d <= 16) hist[d + 16]++;
+            cnt++;
+        }
+        if (cnt < 20) continue;   /* 有效列下限. 主画面观测只有 74 列有效, 不能沿用 658 列时代的 200 */
+        /* 取中位数所在的箱: 与 CPU 端和 Python 复核的中位偏移语义一致.
+         * 取最大箱 (众数) 会让选出的候选与复核口径完全不同。 */
+        int half = cnt / 2, acc = 0, med = 16;
+        for (int k = 0; k < 33; k++) { acc += hist[k]; if (acc >= half) { med = k; break; } }
+        /* 用相同的 1/8 格观测单位解释容差, 与 CPU 和 WebGPU 一致. */
+        int hit = 0, radius = (int)(a.tol * 8.0 + 1e-6);
+        for (int k = med - radius; k <= med + radius; k++) if (k >= 0 && k < 33) hit += hist[k];
+        unsigned qq = (unsigned)((unsigned long long)hit * 10000000ull / (unsigned)cnt);
+        unsigned long long packed = ((unsigned long long)qq << 32) | (unsigned long long)(unsigned)q;
+        atomicMax(&a.best[idx], packed);
+    }
 }
 
 /* ---------------- host ---------------- */
@@ -357,146 +460,344 @@ static int load_obs(const char *path, double *obs, unsigned char *valid, int *n)
     return 0;
 }
 
+struct Options {
+    double tol, offer;
+    int cols, spawn_lo, spawn_hi, marker, check, batch, device;
+    long long from, to;
+    double scales[8];
+    int nscale;
+};
+
+struct ScanContext {
+    int obs_n;
+    int obs8[MAX_OBS];
+    unsigned char valid[MAX_OBS];
+    int shift3[8 * MAX_OBS];
+    double scales[8];
+    int nscale;
+    int cols, w0, w1, W;
+    int base_lo, nbase;
+    double tol, offer;
+    int batch, marker;
+};
+
+struct ScanOutput {
+    std::vector<int> seed, base, scale;
+    std::vector<float> score;
+    std::vector<int> live_order;
+};
+
+static bool save_output(const ScanContext &ctx, const ScanOutput &out, const char *path, const std::vector<int> &order) {
+    return save_candidate_file(path, [&](std::ostream &output) {
+        for (int k : order)
+            output << "seed=" << out.seed[k] << " spawn_x=" << out.base[k] + ctx.marker
+                   << " scale=" << ctx.scales[out.scale[k]] << " score=" << out.score[k] << '\n';
+    });
+}
+
+static bool save_empty(const char *path) {
+    return save_candidate_file(path, [](std::ostream &) {});
+}
+
+/* 单块 GPU 的完整扫描. 多卡时每个线程各自调用, 写自己的候选文件. */
+static bool run_scan(const ScanContext &ctx, const Options &opt, int device, long long from, long long to,
+                     const char *candidates_path, bool prefixed, ScanOutput &out) {
+    if (cudaSetDevice(device) != cudaSuccess) {
+        if (prefixed) printf("[GPU %d] ", device);
+        printf("无法选择 GPU\n");
+        return false;
+    }
+    cudaDeviceProp prop;
+    if (cudaGetDeviceProperties(&prop, device) != cudaSuccess) {
+        if (prefixed) printf("[GPU %d] ", device);
+        printf("无法读取 GPU 属性\n");
+        return false;
+    }
+    if (prefixed) printf("[GPU %d] ", device);
+    printf("GPU: %s, SM %d, 显存 %.1f GB\n", prop.name, prop.multiProcessorCount, prop.totalGlobalMem / 1073741824.0);
+
+    int *d_obs = nullptr; unsigned char *d_valid = nullptr; int *d_shift3 = nullptr;
+    cudaMalloc(&d_obs, sizeof(int) * ctx.obs_n);
+    cudaMalloc(&d_valid, ctx.obs_n);
+    cudaMalloc(&d_shift3, sizeof(int) * 8 * ctx.obs_n);
+    cudaMemcpy(d_obs, ctx.obs8, sizeof(int) * ctx.obs_n, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_valid, ctx.valid, ctx.obs_n, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_shift3, ctx.shift3, sizeof(int) * 8 * ctx.obs_n, cudaMemcpyHostToDevice);
+
+    int *d_prof = nullptr; unsigned long long *d_best = nullptr;
+    cudaMalloc(&d_prof, sizeof(int) * (size_t)ctx.batch * ctx.W);
+    cudaMalloc(&d_best, sizeof(unsigned long long) * ctx.batch);
+
+    const int MAX_OUT = 500000;
+    std::vector<unsigned long long> h_best(ctx.batch);
+    int threads = 128;
+    size_t shmem_a = (size_t)threads * (56 * sizeof(int) + sizeof(unsigned));
+    size_t shmem_b = (size_t)ctx.W * sizeof(int);
+    if (shmem_b > 48 * 1024) {
+        cudaFuncSetAttribute(score_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shmem_b);
+    }
+    if (prefixed) printf("[GPU %d] ", device);
+    printf("kernel A 共享内存 %zu B, kernel B 共享内存 %zu B\n", shmem_a, shmem_b);
+    fflush(stdout);
+
+    if (!save_output(ctx, out, candidates_path, out.live_order)) {
+        fprintf(stderr, "cannot initialize %s\n", candidates_path);
+        return false;
+    }
+
+    long long total = to - from;
+    for (long long start = from; start < to; start += ctx.batch) {
+        int nthis = (int)((to - start < ctx.batch) ? (to - start) : ctx.batch);
+        Args2 a;
+        a.obs8 = d_obs; a.valid = d_valid; a.shift3 = d_shift3; a.obs_n = ctx.obs_n;
+        a.scale_n = ctx.nscale; a.cols = ctx.cols; a.w0 = ctx.w0; a.w1 = ctx.w1;
+        a.base_lo = ctx.base_lo; a.nbase = ctx.nbase;
+        a.seed_from = (int)start; a.seed_to = (int)(start + nthis);
+        a.tol = ctx.tol; a.offer = ctx.offer;
+        a.prof = d_prof; a.best = d_best;
+
+        cudaMemset(d_best, 0, sizeof(unsigned long long) * nthis);
+        int blocks_a = prop.multiProcessorCount * 12;
+        profile_kernel<<<blocks_a, threads, shmem_a>>>(a);
+        cudaError_t err = cudaGetLastError();
+        if (err != cudaSuccess) {
+            if (prefixed) printf("[GPU %d] ", device);
+            printf("kernel A 启动失败: %s\n", cudaGetErrorString(err));
+            return false;
+        }
+        score_kernel<<<nthis, 256, shmem_b>>>(a);
+        err = cudaGetLastError();
+        if (err != cudaSuccess) {
+            if (prefixed) printf("[GPU %d] ", device);
+            printf("kernel B 启动失败: %s\n", cudaGetErrorString(err));
+            return false;
+        }
+        err = cudaDeviceSynchronize();
+        if (err != cudaSuccess) {
+            if (prefixed) printf("[GPU %d] ", device);
+            printf("内核错误: %s\n", cudaGetErrorString(err));
+            return false;
+        }
+
+        cudaMemcpy(h_best.data(), d_best, sizeof(unsigned long long) * nthis, cudaMemcpyDeviceToHost);
+        std::vector<int> ord;
+        ord.reserve(4096);
+        for (int i = 0; i < nthis; i++) {
+            if (!h_best[i]) continue;
+            double sc = (double)(h_best[i] >> 32) / 10000000.0;
+            if (sc < ctx.offer) continue;
+            ord.push_back(i);
+        }
+        const int KEEP_PER_BATCH = 100;
+        if ((int)ord.size() > KEEP_PER_BATCH) {
+            std::partial_sort(ord.begin(), ord.begin() + KEEP_PER_BATCH, ord.end(),
+                              [&](int x, int y) { return h_best[x] > h_best[y]; });
+            ord.resize(KEEP_PER_BATCH);
+        } else {
+            std::sort(ord.begin(), ord.end(), [&](int x, int y) { return h_best[x] > h_best[y]; });
+        }
+        for (int i : ord) {
+            int q = (int)(h_best[i] & 0xffffffffu);
+            if ((int)out.seed.size() < MAX_OUT) {
+                out.live_order.push_back((int)out.seed.size());
+                out.seed.push_back((int)start + i);
+                out.base.push_back(ctx.base_lo + q / ctx.nscale);
+                out.scale.push_back(q % ctx.nscale);
+                out.score.push_back((float)((double)(h_best[i] >> 32) / 10000000.0));
+            }
+        }
+        std::sort(out.live_order.begin(), out.live_order.end(), [&](int x, int y) {
+            return out.score[x] > out.score[y] || (out.score[x] == out.score[y] && out.seed[x] < out.seed[y]);
+        });
+        if (out.live_order.size() > 2000) out.live_order.resize(2000);
+        if (!save_output(ctx, out, candidates_path, out.live_order)) {
+            fprintf(stderr, "cannot save %s\n", candidates_path);
+            return false;
+        }
+        if (prefixed) printf("[GPU %d] ", device);
+        printf("  批 %lld..%lld 完成, 本批达标 %zu 条, 累计候选 %zu, 进度 %.3f%%\n",
+               start, start + nthis, ord.size(), out.seed.size(),
+               100.0 * (start + nthis - from) / (double)total);
+        fflush(stdout);
+    }
+
+    int count = (int)out.seed.size();
+    std::vector<int> order(count);
+    for (int i = 0; i < count; i++) order[i] = i;
+    std::sort(order.begin(), order.end(), [&](int x, int y) { return out.score[x] > out.score[y]; });
+    if (prefixed) printf("[GPU %d] ", device);
+    printf("候选 %d 个, 前 40:\n", count);
+    for (int i = 0; i < count && i < 40; i++) {
+        int k = order[i];
+        printf("  seed=%d spawn_x=%d scale=%.2f score=%.4f\n",
+               out.seed[k], out.base[k] + ctx.marker, ctx.scales[out.scale[k]], out.score[k]);
+    }
+    if (!save_output(ctx, out, candidates_path, order)) {
+        fprintf(stderr, "cannot save %s\n", candidates_path);
+        return false;
+    }
+    cudaFree(d_obs); cudaFree(d_valid); cudaFree(d_shift3);
+    cudaFree(d_prof); cudaFree(d_best);
+    return true;
+}
+
+/* 合并各卡的候选快照, 按分数取前 limit 条. 返回写入的条数. */
+static size_t merge_candidates(const std::vector<std::string> &paths, const char *out_path, size_t limit) {
+    struct Row { int seed; int spawn; double scale; double score; };
+    std::vector<Row> rows;
+    for (const auto &path : paths) {
+        std::ifstream input(path);
+        std::string line;
+        while (std::getline(input, line)) {
+            Row row;
+            if (sscanf(line.c_str(), "seed=%d spawn_x=%d scale=%lf score=%lf", &row.seed, &row.spawn, &row.scale, &row.score) == 4)
+                rows.push_back(row);
+        }
+    }
+    std::sort(rows.begin(), rows.end(), [](const Row &a, const Row &b) {
+        return a.score > b.score || (a.score == b.score && a.seed < b.seed);
+    });
+    if (rows.size() > limit) rows.resize(limit);
+    if (!save_candidate_file(out_path, [&](std::ostream &output) {
+        for (const auto &row : rows)
+            output << "seed=" << row.seed << " spawn_x=" << row.spawn << " scale=" << row.scale << " score=" << row.score << '\n';
+    })) return 0;
+    return rows.size();
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) { fprintf(stderr, "用法: sweep.exe <观测文件> [选项]\n"); return 1; }
     double h_obs[MAX_OBS]; unsigned char h_valid[MAX_OBS]; int obs_n = 0;
     if (load_obs(argv[1], h_obs, h_valid, &obs_n) < 0) return 1;
+    if (obs_n <= 0) { fprintf(stderr, "观测文件没有有效数值\n"); return 1; }
 
-    double scale = 1.0, tol = 1.5, offer = 0.55;
-    int cols = 3550, spawn_lo = 3160, spawn_hi = 3240, marker = 471, check = -1, debug = 0;
-    long long from = 0, to = 2147483647LL;
+    Options opt;
+    opt.tol = 0.5; opt.offer = 0.20; opt.cols = 3550; opt.spawn_lo = 3160; opt.spawn_hi = 3240;
+    opt.marker = 471; opt.check = -1; opt.from = 0; opt.to = 2147483647LL; opt.batch = 400000; opt.device = 0;
+    opt.scales[0] = 1.00; opt.scales[1] = 0.97; opt.scales[2] = 1.03; opt.nscale = 3;
     for (int i = 2; i < argc; i++) {
-        if (!strcmp(argv[i], "--scale") && i + 1 < argc) scale = atof(argv[++i]);
-        else if (!strcmp(argv[i], "--tol") && i + 1 < argc) tol = atof(argv[++i]);
-        else if (!strcmp(argv[i], "--offer") && i + 1 < argc) offer = atof(argv[++i]);
-        else if (!strcmp(argv[i], "--cols") && i + 1 < argc) cols = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--spawn-lo") && i + 1 < argc) spawn_lo = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--spawn-hi") && i + 1 < argc) spawn_hi = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--marker") && i + 1 < argc) marker = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--range") && i + 2 < argc) { from = atoll(argv[++i]); to = atoll(argv[++i]); }
-        else if (!strcmp(argv[i], "--check") && i + 1 < argc) check = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--debug") && i + 1 < argc) debug = atoi(argv[++i]);
-    }
-
-    int shift[MAX_OBS];
-    for (int j = 0; j < obs_n; j++) shift[j] = (int)((double)j / scale + 0.5);
-
-    if (debug == -1) {   /* --rngdump: 借用 --debug -1 触发 */
-        int per = 18, n = 2;
-        int *d_out; cudaMalloc(&d_out, sizeof(int) * n * per);
-        rng_dump_kernel<<<1, n>>>(123456, n, per, d_out);
-        cudaError_t e = cudaGetLastError();
-        if (e != cudaSuccess) { printf("rngdump 启动失败: %s\n", cudaGetErrorString(e)); return 1; }
-        cudaDeviceSynchronize();
-        int *h_out = (int *)malloc(sizeof(int) * n * per);
-        cudaMemcpy(h_out, d_out, sizeof(int) * n * per, cudaMemcpyDeviceToHost);
-        printf("设备端前 %d 个 InternalSample:\n", per);
-        for (int i = 0; i < n; i++) {
-            printf("  seed=%d:", 123456 + i);
-            for (int k = 0; k < per; k++) printf(" %d", h_out[i * per + k]);
-            printf("\n");
+        if (!strcmp(argv[i], "--tol") && i + 1 < argc) opt.tol = atof(argv[++i]);
+        else if (!strcmp(argv[i], "--offer") && i + 1 < argc) opt.offer = atof(argv[++i]);
+        else if (!strcmp(argv[i], "--cols") && i + 1 < argc) opt.cols = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--spawn-lo") && i + 1 < argc) opt.spawn_lo = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--spawn-hi") && i + 1 < argc) opt.spawn_hi = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--marker") && i + 1 < argc) opt.marker = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--range") && i + 2 < argc) { opt.from = atoll(argv[++i]); opt.to = atoll(argv[++i]); }
+        else if (!strcmp(argv[i], "--batch") && i + 1 < argc) opt.batch = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--device") && i + 1 < argc) {
+            const char *value = argv[++i];
+            opt.device = (!strcmp(value, "all")) ? -1 : atoi(value);
         }
-        return 0;
+        else if (!strcmp(argv[i], "--check") && i + 1 < argc) opt.check = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--scale") && i + 1 < argc) { opt.scales[0] = atof(argv[++i]); opt.nscale = 1; }
+        else if (!strcmp(argv[i], "--scales") && i + 1 < argc) {
+            opt.nscale = 0;
+            for (char *tok = strtok(argv[++i], ","); tok && opt.nscale < 8; tok = strtok(NULL, ","))
+                opt.scales[opt.nscale++] = atof(tok);
+        }
     }
-    if (check >= 0) {
-        int hsa[56]; unsigned hinext = 0; RNG hrng = { hsa, &hinext }; rng_seed(&hrng, check);
-        int right; int left = setup_beach(&hrng, check, W_MEDIUM, &right);
-        printf("seed %d leftBeachEnd %d rightBeachStart %d\n", check, left, right);
-        /* 逐点对照: 直接打印 base=marker 参考下的前若干列 */
+    if (opt.batch < 1) opt.batch = 1;
+    if (opt.device < 0) opt.device = -1;
+
+    int shift3[8 * MAX_OBS];
+    for (int s = 0; s < opt.nscale; s++)
+        for (int j = 0; j < obs_n; j++)
+            shift3[s * obs_n + j] = (int)((double)j * opt.scales[s] + 0.5);
+
+    if (opt.check >= 0) {
+        int hsa[56]; unsigned hinext = 0; RNG hrng = { hsa, &hinext, 0, 0, 0 }; rng_seed(&hrng, opt.check);
+        int right; int left = setup_beach(&hrng, opt.check, W_MEDIUM, &right);
+        printf("seed %d leftBeachEnd %d rightBeachStart %d\n", opt.check, left, right);
+        int shift[MAX_OBS];
+        for (int j = 0; j < obs_n; j++) shift[j] = (int)((double)j * opt.scales[0] + 0.5);
         double best = -1; int best_base = 0;
-        for (int sx = spawn_lo; sx <= spawn_hi; sx++) {
+        for (int sx = opt.spawn_lo; sx <= opt.spawn_hi; sx++) {
             int hits, cnt;
-            rng_seed(&hrng, check);
-            double sc = stream_score(&hrng, check, left, right, cols, sx - marker, h_obs, h_valid, shift, obs_n, tol, &hits, &cnt);
+            rng_seed(&hrng, opt.check);
+            double sc = stream_score(&hrng, opt.check, left, right, opt.cols, sx - opt.marker, h_obs, h_valid, shift, obs_n, opt.tol, &hits, &cnt);
             if (sc > best) { best = sc; best_base = sx; }
         }
         printf("最佳对齐 spawn_x=%d 得分 %.4f\n", best_base, best);
         return 0;
     }
 
-    int nbase = spawn_hi - spawn_lo + 1;
-    printf("扫描 %lld..%lld, 尺度 %.3f, 观测列 %d, spawn 范围 %d..%d, 候选 %d 个偏移, 阈值 %.3f\n",
-           from, to, scale, obs_n, spawn_lo, spawn_hi, nbase, offer);
-    fflush(stdout);
-
-    double *d_obs; unsigned char *d_valid; int *d_shift;
-    cudaMalloc(&d_obs, sizeof(double) * obs_n);
-    cudaMalloc(&d_valid, obs_n);
-    cudaMalloc(&d_shift, sizeof(int) * obs_n);
-    cudaMemcpy(d_obs, h_obs, sizeof(double) * obs_n, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_valid, h_valid, obs_n, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_shift, shift, sizeof(int) * obs_n, cudaMemcpyHostToDevice);
-
-    const int MAX_OUT = 4096;
-    int *d_seed, *d_base, *d_count; float *d_score;
-    cudaMalloc(&d_seed, sizeof(int) * MAX_OUT);
-    cudaMalloc(&d_base, sizeof(int) * MAX_OUT);
-    cudaMalloc(&d_score, sizeof(float) * MAX_OUT);
-    cudaMalloc(&d_count, sizeof(int));
-    cudaMemset(d_count, 0, sizeof(int));
-
-    cudaDeviceProp prop; cudaGetDeviceProperties(&prop, 0);
-    printf("GPU: %s, SM %d, 显存 %.1f GB\n", prop.name, prop.multiProcessorCount, prop.totalGlobalMem / 1073741824.0);
-    fflush(stdout);
-
-    float *d_dbg = NULL; float *h_dbg = NULL;
-    if (debug > 0) {
-        cudaMalloc(&d_dbg, sizeof(float) * 6 * debug);
-        cudaMemset(d_dbg, 0, sizeof(float) * 6 * debug);
-        h_dbg = (float *)malloc(sizeof(float) * 6 * debug);
+    int nbase = opt.spawn_hi - opt.spawn_lo + 1;
+    int base_lo = opt.spawn_lo - opt.marker;
+    int shift_max = 0;
+    for (int s = 0; s < opt.nscale; s++) {
+        int v = shift3[s * obs_n + obs_n - 1];
+        if (v > shift_max) shift_max = v;
     }
+    int w0 = base_lo;
+    int w1 = base_lo + (nbase - 1) + shift_max + 1;
+    if (w0 < 0) w0 = 0;
+    if (w1 > opt.cols) w1 = opt.cols;
+    int W = w1 - w0;
+    printf("剖面窗口 [%d, %d) 共 %d 列; 偏移 %d 个, 尺度 %d 个\n", w0, w1, W, nbase, opt.nscale);
 
-    /* 每个 base 一个 grid, 串行启动, 每个 grid 内用满 GPU */
-    for (int b = 0; b < nbase; b++) {
-        Args a;
-        a.obs = d_obs; a.valid = d_valid; a.shift = d_shift; a.obs_n = obs_n; a.cols = cols;
-        a.base = (spawn_lo + b) - marker;
-        a.seed_from = 0; a.seed_to = (int)to;
-        a.tol = tol; a.offer = offer;
-        a.out_seed = d_seed; a.out_base = d_base; a.out_score = d_score; a.out_count = d_count;
-        a.max_out = MAX_OUT;
-        a.dbg = d_dbg; a.dbg_n = debug;
-        int threads = 128;                     /* 128 * 228B = 29KB, 在默认 48KB 之内 */
-        int blocks = prop.multiProcessorCount * 12;
-        size_t shmem = (size_t)threads * (56 * sizeof(int) + sizeof(unsigned));
-        sweep_kernel<<<blocks, threads, shmem>>>(a);
-        cudaError_t err = cudaGetLastError();  /* 启动错误必须单独查 */
-        if (err == cudaSuccess) err = cudaDeviceSynchronize();
-        if (err != cudaSuccess) { printf("内核错误: %s\n", cudaGetErrorString(err)); return 1; }
-        if (b % 10 == 0) { printf("  已完成偏移 %d/%d\n", b + 1, nbase); fflush(stdout); }
+    ScanContext ctx;
+    ctx.obs_n = obs_n;
+    for (int i = 0; i < obs_n; i++) {
+        ctx.valid[i] = h_valid[i];
+        ctx.obs8[i] = h_valid[i] ? (int)(h_obs[i] * 8.0 + (h_obs[i] >= 0 ? 0.5 : -0.5)) : 0;
     }
+    for (int i = 0; i < 8 * obs_n; i++) ctx.shift3[i] = shift3[i];
+    for (int i = 0; i < opt.nscale; i++) ctx.scales[i] = opt.scales[i];
+    ctx.nscale = opt.nscale;
+    ctx.cols = opt.cols; ctx.w0 = w0; ctx.w1 = w1; ctx.W = W;
+    ctx.base_lo = base_lo; ctx.nbase = nbase;
+    ctx.tol = opt.tol; ctx.offer = opt.offer; ctx.batch = opt.batch; ctx.marker = opt.marker;
 
-    if (debug > 0 && h_dbg) {
-        cudaMemcpy(h_dbg, d_dbg, sizeof(float) * 6 * debug, cudaMemcpyDeviceToHost);
-        printf("调试: 前 %d 个种子 (sc, hits, cnt, left, right, 入口标记):\n", debug);
-        for (int i = 0; i < debug; i++)
-            printf("  seed=%lld  sc=%.4f hits=%.0f cnt=%.0f left=%.0f right=%.0f mark=%.0f\n",
-                   from + i, h_dbg[i * 6], h_dbg[i * 6 + 1], h_dbg[i * 6 + 2],
-                   h_dbg[i * 6 + 3], h_dbg[i * 6 + 4], h_dbg[i * 6 + 5]);
-    }
-    int count = 0;
-    cudaMemcpy(&count, d_count, sizeof(int), cudaMemcpyDeviceToHost);
-    if (count > MAX_OUT) count = MAX_OUT;
-    std::vector<int> seeds(count), bases(count);
-    std::vector<float> scores(count);
-    cudaMemcpy(seeds.data(), d_seed, sizeof(int) * count, cudaMemcpyDeviceToHost);
-    cudaMemcpy(bases.data(), d_base, sizeof(int) * count, cudaMemcpyDeviceToHost);
-    cudaMemcpy(scores.data(), d_score, sizeof(float) * count, cudaMemcpyDeviceToHost);
-    std::vector<int> order(count);
-    for (int i = 0; i < count; i++) order[i] = i;
-    std::sort(order.begin(), order.end(), [&](int x, int y) { return scores[x] > scores[y]; });
-    printf("候选 %d 个, 前 40:\n", count);
-    for (int i = 0; i < count && i < 40; i++) {
-        int k = order[i];
-        printf("  seed=%d spawn_x=%d score=%.4f\n", seeds[k], bases[k] + marker, scores[k]);
-    }
-    FILE *f = fopen("candidates_gpu.txt", "w");
-    if (f) {
-        for (int i = 0; i < count; i++) {
-            int k = order[i];
-            fprintf(f, "seed=%d spawn_x=%d score=%.4f\n", seeds[k], bases[k] + marker, scores[k]);
+    if (opt.device == -1) {
+        int count = 0;
+        cudaError_t err = cudaGetDeviceCount(&count);
+        if (err != cudaSuccess || count <= 0) {
+            fprintf(stderr, "没有可用的 NVIDIA GPU: %s\n", cudaGetErrorString(err));
+            return 1;
         }
-        fclose(f);
+        printf("扫描 %lld..%lld, 容差 %.2f, 阈值 %.3f, 批大小 %d, 使用 %d 块 GPU\n",
+               opt.from, opt.to, opt.tol, opt.offer, opt.batch, count);
+        fflush(stdout);
+        if (!save_empty("candidates_gpu2.txt")) { fprintf(stderr, "cannot initialize candidates_gpu2.txt\n"); return 1; }
+        std::vector<std::string> paths(count);
+        for (int i = 0; i < count; i++) {
+            paths[i] = "candidates_gpu2.dev" + std::to_string(i) + ".txt";
+            if (!save_empty(paths[i].c_str())) { fprintf(stderr, "cannot initialize %s\n", paths[i].c_str()); return 1; }
+        }
+        std::atomic<int> remaining(count);
+        std::atomic<bool> failed(false);
+        std::vector<std::thread> threads;
+        for (int i = 0; i < count; i++) {
+            long long a = opt.from + (opt.to - opt.from) * i / count;
+            long long b = opt.from + (opt.to - opt.from) * (i + 1) / count;
+            threads.emplace_back([&, i, a, b]() {
+                ScanOutput output;
+                if (!run_scan(ctx, opt, i, a, b, paths[i].c_str(), true, output)) failed = true;
+                remaining--;
+            });
+        }
+        size_t merged = 0;
+        while (remaining > 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            size_t current = merge_candidates(paths, "candidates_gpu2.txt", 500000);
+            if (current) merged = current;
+        }
+        for (auto &thread : threads) thread.join();
+        size_t final_count = merge_candidates(paths, "candidates_gpu2.txt", 500000);
+        if (final_count) merged = final_count;
+        printf("批 %lld..%lld 完成, 本批达标 %zu 条, 累计候选 %zu, 进度 100.000%%\n",
+               opt.from, opt.to, merged, merged);
+        fflush(stdout);
+        for (auto &path : paths) std::remove(path.c_str());
+        return failed ? 1 : 0;
     }
+
+    printf("扫描 %lld..%lld, 容差 %.2f, 阈值 %.3f, 批大小 %d, GPU %d\n",
+           opt.from, opt.to, opt.tol, opt.offer, opt.batch, opt.device);
+    fflush(stdout);
+    ScanOutput out;
+    if (!run_scan(ctx, opt, opt.device, opt.from, opt.to, "candidates_gpu2.txt", false, out)) return 1;
     return 0;
 }
+
+#endif // TERRARIA_HOST_ONLY

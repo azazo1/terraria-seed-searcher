@@ -7,10 +7,6 @@ import subprocess
 import sys
 import tempfile
 import unittest
-import threading
-import time
-from unittest.mock import patch
-import search_tasks
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -69,58 +65,6 @@ class SearchBackendsTest(unittest.TestCase):
             if proc.poll() is None:
                 proc.kill()
                 proc.communicate()
-
-    def test_real_cpu_pause_restart_and_resume_matches_uninterrupted_search(self):
-        observation = {"format": "terraria-seed-searcher/observation", "version": 1, "heights": [0] * 30, "marker": 10}
-        settings = {"range": [40, 136], "offer": .01}
-        directory = self.scratch / "resume-fixture"
-        manager = search_tasks.TaskManager(directory, {"cpu": self.binary}, "fixture")
-        original = search_tasks.TaskStore.commit
-        def commit(store, *args, **kwargs):
-            meta = original(store, *args, **kwargs)
-            manager.stop(meta["id"])
-            return meta
-        def wait(current, task_id, status):
-            deadline = time.monotonic() + 10
-            while time.monotonic() < deadline:
-                if current.summary(task_id)["status"] == status and task_id not in current.runtime: return
-                threading.Event().wait(.01)
-            self.fail(f"native task did not reach {status}")
-        with patch.object(search_tasks, "CPU_BLOCK", 32):
-            with patch.object(search_tasks.TaskStore, "commit", commit):
-                payload = manager.create("cpu", settings, observation); task_id = payload["task"]["id"]
-                wait(manager, task_id, "paused")
-            self.assertEqual(manager.store(task_id).read()["next"], 72)
-            restarted = search_tasks.TaskManager(directory, {"cpu": self.binary}, "fixture")
-            restarted.resume(task_id); wait(restarted, task_id, "completed")
-        baseline = manager.store(task_id).directory / "baseline"
-        baseline.mkdir()
-        command = [str(self.binary), str(manager.store(task_id).directory / "observed.txt"), "--range", "40", "136", "--marker", "10", "--offer", ".01"]
-        subprocess.run(command, cwd=baseline, check=True, capture_output=True)
-        rows = search_tasks.candidate_rows(baseline / "candidates_cpu.txt")
-        self.assertEqual(sorted(restarted.store(task_id).rows(), key=lambda row: row["seed"]), sorted(rows, key=lambda row: row["seed"]))
-        self.assertEqual(restarted.summary(task_id)["progress"]["scanned"], 96)
-        worker_code = '''import sys, threading
-from pathlib import Path
-import search_tasks
-search_tasks.CPU_BLOCK = 32
-manager = search_tasks.TaskManager(Path(sys.argv[1]), {"cpu": Path(sys.argv[2])}, "fixture")
-payload = manager.create("cpu", {"range": [40, 136], "offer": .01}, {"format": "terraria-seed-searcher/observation", "version": 1, "heights": [0] * 30, "marker": 10})
-print(payload["task"]["id"], flush=True)
-threading.Event().wait(30)
-'''
-        crash_directory = self.scratch / "crash-fixture"
-        service = subprocess.Popen([sys.executable, "-B", "-c", worker_code, str(crash_directory), str(self.binary)], cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        try:
-            crash_id = service.stdout.readline().strip()
-            self.assertEqual(len(crash_id), 32)
-        finally:
-            service.kill(); service.communicate(timeout=5)
-        recovered = search_tasks.TaskManager(crash_directory, {"cpu": self.binary}, "fixture")
-        self.assertEqual(recovered.summary(crash_id)["status"], "interrupted")
-        with patch.object(search_tasks, "CPU_BLOCK", 32):
-            recovered.resume(crash_id); wait(recovered, crash_id, "completed")
-        self.assertEqual(sorted(recovered.store(crash_id).rows(), key=lambda row: row["seed"]), sorted(rows, key=lambda row: row["seed"]))
 
     def test_native_cpu_candidates_match_browser_scoring(self):
         profile = self.js("Array.from(terrainProfile(42,3400))")

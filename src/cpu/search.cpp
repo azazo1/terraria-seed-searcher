@@ -1,6 +1,6 @@
 /* 主机多线程 CPU 粗筛, 与 CUDA 共用 RNG 和 TerrainPass. */
 #define TERRARIA_HOST_ONLY
-#include "../cuda/sweep2.cu"
+#include "../cuda/sweep.cu"
 #include <atomic>
 #include <chrono>
 #include <csignal>

@@ -34,7 +34,12 @@
 ```
 docs/methodology.md   方法论: 每一步怎么做, 为什么这么做, 坑在哪
 docs/timeline.md      过程复盘: 走过的分支, 卡住的地方, 怎么绕出来的
-src/cuda/             CUDA 搜索器 (sweep.cu 单次版, sweep2 双内核版) 与 CPU 版
+docs/changelog/       每个版本的发布说明
+main.go, internal/    Go 工作台: HTTP 接口, 任务调度, 页面资源嵌入
+src/cuda/sweep.cu     CUDA 搜索器 (双内核, 单卡与 --device all 多卡)
+src/cpu/search.cpp    主机多线程 CPU 搜索器
+src/mlx/              Apple GPU (MLX/Metal) 搜索器
+scripts/              发布构建与归档脚本
 tools/                Python 工具: 截图提剖面, 多图拼接, 存档解析, 候选复核
 web/                  浏览器里的拼接校准与地表标注页面
 data/                 用过的观测数据, 搜索参数, 结果, 以及原始工作记录
@@ -43,6 +48,10 @@ README-original.md    原始工作目录的 README
 ```
 
 ## 页面工作台
+
+从 [Releases](https://github.com/azazo1/terraria-seed-searcher/releases) 下载对应平台的归档, 解压后直接运行 `terraria-seed-searcher` (Windows 为 `.exe`). 页面资源已经嵌入可执行文件, 不需要 Python.
+
+源码运行时执行:
 
 ```shell
 just serve
@@ -65,8 +74,8 @@ just serve
 
 | 方式 | 计算位置 | 准备 |
 | --- | --- | --- |
-| 主机 CPU | 运行工作台服务的主机, 多线程后台进程 | `just build-cpu`, 无需 CUDA |
-| 主机 NVIDIA GPU (CUDA) | 运行工作台服务的主机 | 在 CUDA 机器运行 `just build` |
+| 主机 CPU | 运行工作台服务的主机, 多线程后台进程 | 发布包自带 `sweep-cpu`; 源码运行 `just build-cpu` |
+| 主机 NVIDIA GPU (CUDA) | 运行工作台服务的主机 | 发布包自带 `sweep`; 源码运行 `just build` |
 | 主机 Apple GPU (MLX/Metal) | 运行工作台服务的主机, 仅 macOS | `brew install mlx mlx-c`, 然后 `just build-mlx` |
 | 浏览器 GPU (WebGPU) | 打开页面的设备 | 浏览器支持 WebGPU, 使用 localhost 或 HTTPS |
 
@@ -83,16 +92,25 @@ CPU, MLX 和 WebGPU 当前支持 6400 x 1800 中世界, 最多 700 个观测列�
 
 ## 快速上手
 
-使用主机 CUDA 后端时, 先在 CUDA 环境构建搜索器. Windows 使用能找到 `nvcc` 和 MSVC `cl` 的开发者终端, 输出为仓库根目录的 `sweep2.exe`; Linux 输出为 `sweep2`. 构建命令不需要 `-lm`, Windows 会将它解释为不存在的 `m.lib`.
+Windows 和 Linux 发布包内的 `sweep` 是预编译 CUDA 搜索器, 静态链接 cudart, 只需要 NVIDIA 驱动, 不需要安装 CUDA Toolkit. Windows 包覆盖 Maxwell 到 Blackwell 的显卡, 更老的 Kepler 不在支持范围内. macOS 发布包只带 `sweep-cpu`, 需要 Apple GPU 时按上面的表格从源码构建 MLX 搜索器.
+
+从源码构建时, Windows 使用能找到 `nvcc` 和 MSVC `cl` 的开发者终端, 输出为仓库根目录的 `sweep.exe`; Linux 输出为 `sweep`.
 
 ```shell
 just build
 
-# 全空间分两半并行 (两块卡各一半)
-./sweep2 data/observed_manual.txt --range 0 1073741824 \
+# 单卡
+./sweep data/observed_manual.txt --range 0 1073741824 \
     --tol 0.5 --offer 0.55 --batch 400000 --device 0 \
     --marker 141 --spawn-lo 3180 --spawn-hi 3220 --cols 3400
+
+# 多卡, 自动平分种子区间
+./sweep data/observed_manual.txt --range 0 2147483647 \
+    --tol 0.5 --offer 0.55 --batch 400000 --device all \
+    --marker 141 --spawn-lo 3180 --spawn-hi 3220 --cols 3400
 ```
+
+工作台里的 GPU 编号填 `-1` 等价于 `--device all`.
 
 参数含义:
 
@@ -103,4 +121,5 @@ just build
 | `--cols` | 需要模拟到第几列 |
 | `--tol` | 命中判据的容差, 单位格 |
 | `--offer` | 只保留分数高于此值的种子 |
+| `--device` | `0` 起始的 GPU 编号; `all` 或 `-1` 使用全部显卡 |
 | `--scales` | 逗号分隔的比例尺集合 |

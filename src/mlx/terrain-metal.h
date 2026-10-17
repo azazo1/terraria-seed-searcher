@@ -1,6 +1,6 @@
 /* MLX 自定义 Metal 内核源码.
  *
- * 与 web/gpu/search.wgsl 以及 src/cuda/sweep2.cu 共享同一套整数随机数与评分口径,
+ * 与 web/gpu/search.wgsl 以及 src/cuda/sweep.cu 共享同一套整数随机数与评分口径,
  * 三者必须保持一致; 改动任何一处都要同步另外两处, 并用 tests/test_search_backends.py 对拍.
  *
  * 世界尺寸按中世界写死 (6400 x 1800, 地表限制 306 / 414 / 468, 地形分段 2880 / 3072 / 3520 / 3328),

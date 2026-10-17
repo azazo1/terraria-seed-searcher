@@ -456,7 +456,7 @@ test('导入最终观测前等待旧编辑器保存, 后续进入搜索不会用
 });
 
 test('计算后端可手动选择主机 CPU 或 CUDA, CPU 请求主机接口且按编译状态启用', async () => {
-  const store = { names: [], observed: { valid: 30, columns: 30, marker: 2, source: 'import' }, searcher_built: false, cpu_searcher_built: true, searcher_paths: { cuda: 'C:/fixture/sweep2.exe', cpu: 'C:/fixture/sweep-cpu.exe' } };
+  const store = { names: [], observed: { valid: 30, columns: 30, marker: 2, source: 'import' }, searcher_built: false, cpu_searcher_built: true, searcher_paths: { cuda: 'C:/fixture/sweep.exe', cpu: 'C:/fixture/sweep-cpu.exe' } };
   const env = environment(await readFile(new URL('../web/index.html', import.meta.url), 'utf8'), store);
   try {
     await import('../web/app.js?ui-host-cpu-choice'); const get = id => env.ids.get(id), backend = get('search-backend');
