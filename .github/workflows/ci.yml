@@ -157,7 +157,7 @@ jobs:
             cuda_bin: 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8\bin'
             cuda_method: local
             cuda_packages: '[]'
-          - os: ubuntu-24.04
+          - os: ubuntu-22.04
             platform: linux
             arch: x86_64
             cuda: true
@@ -206,9 +206,9 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ${{ matrix.cuda_dir }}
-          key: cuda-12.8.1-${{ runner.os }}-${{ matrix.arch }}-sub-v1
+          key: cuda-12.8.1-${{ matrix.os }}-${{ matrix.arch }}-sub-v1
           restore-keys: |
-            cuda-12.8.1-${{ runner.os }}-${{ matrix.arch }}-
+            cuda-12.8.1-${{ matrix.os }}-${{ matrix.arch }}-
 
       - name: 安装 CUDA Toolkit
         if: matrix.cuda && steps.cuda-cache.outputs.cache-hit != 'true'
@@ -224,7 +224,7 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: ${{ matrix.cuda_dir }}
-          key: cuda-12.8.1-${{ runner.os }}-${{ matrix.arch }}-sub-v1
+          key: cuda-12.8.1-${{ matrix.os }}-${{ matrix.arch }}-sub-v1
 
       - name: 配置缓存的 CUDA
         if: matrix.cuda && steps.cuda-cache.outputs.cache-hit == 'true'
