@@ -30,3 +30,4 @@ data/candidates.txt
 data/_old/
 __pycache__/
 *.pyc
+.references/
