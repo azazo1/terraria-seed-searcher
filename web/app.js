@@ -158,6 +158,7 @@ function renderTasks(st) {
   const tasks = st.tasks || [], live = tasks.find(task => ['running', 'stopping'].includes(task.status));
   if (live) { selectedTaskId = live.id; $('search-backend').value = live.backend; }
   else if (!selectedTaskId && !taskListKey && tasks.length) { selectedTaskId = tasks[0].id; $('search-backend').value = tasks[0].backend; }
+  if (selectedTaskId && !tasks.some(task => task.id === selectedTaskId)) selectedTaskId = '';
   const key = JSON.stringify(tasks.map(task => [task.id, task.status]));
   if (key !== taskListKey) {
     taskListKey = key; $('search-task').replaceChildren();
@@ -165,10 +166,12 @@ function renderTasks(st) {
     const empty = document.createElement('option'); empty.value = ''; empty.textContent = tasks.length ? '选择已保存的任务' : '尚无搜索任务'; $('search-task').append(empty);
     for (const task of tasks) { const option = document.createElement('option'); option.value = task.id; option.textContent = `${task.id.slice(0, 8)} / ${task.backend} / ${statuses[task.status] || task.status} / ${task.parameters.range.join('..')}`; $('search-task').append(option); }
   }
+  const busy = !!live || browserSearch.running || startingSearch || transferring;
   $('search-task').value = selectedTaskId;
-  $('search-task').disabled = !!live || browserSearch.running || startingSearch || transferring;
+  $('search-task').disabled = busy;
   const task = selectedTask(st);
-  $('resume-search').disabled = !task?.can_resume || task?.backend === 'webgpu' && !webGpuSupported || !!live || browserSearch.running || startingSearch || transferring;
+  $('resume-search').disabled = !task?.can_resume || task?.backend === 'webgpu' && !webGpuSupported || busy;
+  $('delete-task').disabled = !task || busy;
   $('task-detail').textContent = task ? `已保存 ${task.next - task.parameters.range[0]} / ${task.parameters.range[1] - task.parameters.range[0]} 个种子, 安全续跑位置 ${task.next}. ${!task.compatible ? '搜索器版本已变化, 请创建新任务. ' : task.backend === 'webgpu' && !webGpuSupported ? '当前浏览器不支持 WebGPU, 请换用支持的浏览器继续. ' : ''}${task.error || ''}` : '新搜索会自动保存独立任务和断点.';
 }
 function renderState(st) {
@@ -328,6 +331,22 @@ async function startTask(resume = false) {
 }
 $('start').onclick = () => startTask();
 $('resume-search').onclick = () => startTask(true);
+$('delete-task').onclick = async () => {
+  const task = selectedTask(state);
+  if (!task || startingSearch || transferring) return;
+  const label = `${task.id.slice(0, 8)} (${task.backend} ${task.parameters.range[0]}..${task.parameters.range[1]}, ${task.progress.candidates || 0} 个候选)`;
+  if (!confirm(`删除任务 ${label}? 断点和该任务的候选会一起删除, 不可恢复.`)) return;
+  $('delete-task').disabled = true;
+  try {
+    await request('/api/task/delete', { id: task.id });
+    selectedTaskId = ''; taskListKey = ''; candidateKey = '';
+    await refreshState();
+    await loadLog().catch(error => toast(error.message, true));
+    if (active === 'candidates') await loadCandidates(true).catch(error => toast(error.message, true));
+    toast('已删除任务 ' + label);
+  } catch (error) { toast('删除失败: ' + error.message, true); }
+  finally { if (state) renderState(state); }
+};
 $('stop').onclick = async () => {
   $('stop').disabled = true;
   if (browserSearch.running) browserSearch.stop();

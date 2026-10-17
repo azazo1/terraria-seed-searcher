@@ -27,6 +27,7 @@ class SearchTasksTest(unittest.TestCase):
             runtime["stop"].set()
             runtime["lock"].close()
         self.manager.runtime.clear()
+        search_tasks.STUCK_TRASH.clear()
         self.temp.cleanup()
 
     def new_manager(self):
@@ -130,3 +131,41 @@ class SearchTasksTest(unittest.TestCase):
         self.assertEqual(self.manager.store(task_id).read()["next"], 100)
         self.assertEqual(self.manager.store(task_id).rows(), [])
         self.assertTrue(self.new_manager().summary(task_id)["can_resume"])
+
+    def test_delete_removes_paused_task(self):
+        payload = self.browser(); task_id = payload["task"]["id"]
+        self.manager.browser_finish(task_id, payload["owner"])
+        directory = self.manager.store(task_id).directory
+        self.manager.delete(task_id)
+        self.assertFalse(directory.exists())
+        self.assertEqual(self.manager.summaries(), [])
+        with self.assertRaises(ValueError): self.manager.store(task_id).read()
+
+    def test_delete_refuses_running_task(self):
+        payload = self.browser(); task_id = payload["task"]["id"]
+        with self.assertRaises(ValueError): self.manager.delete(task_id)
+        self.assertTrue(self.manager.store(task_id).directory.is_dir())
+        self.manager.browser_finish(task_id, payload["owner"])
+
+    def test_delete_refuses_task_locked_by_another_service(self):
+        payload = self.browser(); task_id = payload["task"]["id"]
+        self.manager.browser_finish(task_id, payload["owner"])
+        directory = self.manager.store(task_id).directory
+        guard = search_tasks.TaskLock(directory / "run.lock")
+        try:
+            with self.assertRaises(ValueError): self.manager.delete(task_id)
+        finally:
+            guard.close()
+        self.assertTrue(directory.is_dir())
+
+    def test_delete_leaves_trash_when_cleanup_fails(self):
+        payload = self.browser(); task_id = payload["task"]["id"]
+        self.manager.browser_finish(task_id, payload["owner"])
+        with patch.object(search_tasks.shutil, "rmtree", side_effect=OSError("busy")):
+            self.manager.delete(task_id)
+        self.assertEqual(self.manager.summaries(), [])
+        leftovers = list((self.root / "tasks").glob("trash-*"))
+        self.assertEqual(len(leftovers), 1)
+        search_tasks.STUCK_TRASH.clear()
+        self.manager.summaries()
+        self.assertEqual(list((self.root / "tasks").glob("trash-*")), [])

@@ -65,6 +65,10 @@ function environment(html, store) {
         store.tasks = [task];
         return { ok: true, json: async () => ({ task, observation: store.observation, parameters: task.parameters, owner: 'synthetic-owner', rows: [], elapsed: 0, matched: 0 }) };
       }
+      if (url === '/api/task/delete') {
+        store.tasks = (store.tasks || []).filter(task => task.id !== data.id);
+        return { ok: true, json: async () => ({ ok: true, deleted: data.id }) };
+      }
       return { ok: true, json: async () => ({ ok: true, observed: data.cols?.length ? { valid: data.cols.length, step_rate: 10 } : null }) };
     }
     if (store.readFailure?.url === url) return { ok: false, status: store.readFailure.status, json: async () => ({ error: store.readFailure.error }) };
@@ -533,5 +537,24 @@ test('网格, 拼接和标注按顺序继承, 返回修改后不会被旧编辑�
     assert.equal(calibCreated, 2); assert.equal(loadedTile, 24); assert.equal(store.param.frames[0].x, 250);
     fail = true; await clickTab('mark');
     assert.equal(get('tab-calib').getAttribute('aria-selected'), 'true'); assert.equal(get('pane-calib').hidden, false); assert.equal(get('app-notice').hidden, false);
+  } finally { env.restore(); }
+});
+
+test('删除任务需要确认, 删除后清空选中并刷新列表', async () => {
+  const task = { id: 'saved-task', backend: 'cpu', parameters: { ...DEFAULT_SEARCH_PARAMETERS, range: [100, 200] }, next: 150, status: 'paused', can_resume: true, compatible: true, version: '1', progress: { status: 'stopped', scanned: 50, total: 100, elapsed: 10, candidates: 2 } };
+  const store = { names: [], observed: null, cpu_searcher_built: true, tasks: [task] };
+  const env = environment(await readFile(new URL('../web/index.html', import.meta.url), 'utf8'), store);
+  try {
+    globalThis.location.hash = '#search'; await import('../web/app.js?delete-task=' + Date.now()); await env.ids.get('refresh').click();
+    const get = id => env.ids.get(id), deletes = () => env.post.filter(row => row.url === '/api/task/delete');
+    assert.equal(get('delete-task').disabled, false);
+    globalThis.confirm = () => false; await get('delete-task').click();
+    assert.equal(deletes().length, 0);
+    globalThis.confirm = () => true; await get('delete-task').click();
+    assert.deepEqual(deletes().map(row => row.data), [{ id: task.id }]);
+    assert.equal(store.tasks.length, 0);
+    assert.equal(get('search-task').value, '');
+    assert.equal(get('search-task').children.length, 1);
+    assert.equal(get('delete-task').disabled, true);
   } finally { env.restore(); }
 });
